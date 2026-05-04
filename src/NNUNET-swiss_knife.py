@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 import time
 import threading
+import re
+from torch.utils.tensorboard import SummaryWriter
 
 # ---------------------------------------------------------
 # CONFIGURATION DES CHEMINS 
@@ -52,33 +54,64 @@ def run_command(cmd_list):
 # ---------------------------------------------------------
 # OUTILS DE MONITORING (NOUVEAU)
 # ---------------------------------------------------------
-def monitor_training_log(log_file_path: Path):
+def monitor_training_log(run_output_dir: Path, dataset_id: str, fold: str):
     """
-    Tourne en tâche de fond (Thread) pendant l'entraînement.
-    Lit le fichier log en temps réel et extrait les métriques clés.
+    Tourne en tâche de fond. Cherche le fichier log le plus récent,
+    le lit en temps réel et envoie les métriques à TensorBoard.
     """
-    print(f"\n[MONITORING] En attente du fichier log : {log_file_path.name}...")
+    # 1. Configuration TensorBoard
+    tb_dir = NNUNET_RESULTS / "tensorboard_logs" / f"{dataset_id}_fold_{fold}"
+    writer = SummaryWriter(log_dir=str(tb_dir))
     
-    # Attend que nnU-Net crée le fichier (il peut mettre quelques minutes)
-    while not log_file_path.exists():
-        time.sleep(5)
-        
-    print(f"[MONITORING] Fichier détecté ! Suivi des courbes en cours...")
+    print(f"\n[MONITORING] En attente de la création du log par nnU-Net dans : {run_output_dir.name}...")
     
+    # 2. Attente active : on cherche le fichier texte le plus récent
+    log_file_path = None
+    while log_file_path is None:
+        time.sleep(2)
+        # Cherche tous les fichiers qui commencent par "training_log"
+        logs = list(run_output_dir.glob("training_log_*.txt"))
+        if logs:
+            # S'il y en a plusieurs (ex: reprise sur sauvegarde), on prend le dernier modifié
+            log_file_path = max(logs, key=os.path.getmtime)
+            
+    print(f"[MONITORING] Log détecté ({log_file_path.name}) ! Lancement de TensorBoard.")
+    
+    current_epoch = 0
+    
+    # 3. Lecture en direct (Tail)
     with open(log_file_path, "r") as f:
-        # Se place à la fin du fichier actuel
-        f.seek(0, 2)
+        f.seek(0, 2) # On se place à la fin
+        
         while getattr(threading.current_thread(), "do_run", True):
             line = f.readline()
             if not line:
-                time.sleep(1) # Rien de nouveau, on attend
+                time.sleep(2)
                 continue
             
             line = line.strip()
-            # Intercepte la ligne qui résume la fin d'une époque (Epoch XX)
-            if "train_loss" in line or "val_loss" in line or "Pseudo dice" in line:
-                # Affichage nettoyé dans la console
-                print(f" 📈 [MONITORING EMA] {line}")
+            
+            if line.startswith("Epoch"):
+                match = re.search(r"Epoch (\d+)", line)
+                if match:
+                    current_epoch = int(match.group(1))
+            
+            elif "train_loss" in line:
+                match = re.search(r"train_loss\s*[:=]\s*([\d\.]+)", line)
+                if match:
+                    writer.add_scalar("Loss/Train", float(match.group(1)), current_epoch)
+                    
+            elif "val_loss" in line:
+                match = re.search(r"val_loss\s*[:=]\s*([\d\.]+)", line)
+                if match:
+                    writer.add_scalar("Loss/Validation", float(match.group(1)), current_epoch)
+                    
+            elif "Pseudo dice" in line or "pseudo dice" in line.lower():
+                floats = re.findall(r"[\d\.]+", line.split(":")[-1])
+                if floats:
+                    tumor_dice = float(floats[-1])
+                    writer.add_scalar("Metrics/Pseudo_Dice_Tumor", tumor_dice, current_epoch)
+                    print(f" 📈 [Époque {current_epoch}] TB Mis à jour -> Dice Tumeur: {tumor_dice:.4f}")
 
 # ---------------------------------------------------------
 # FONCTIONS MÉTIERS 
@@ -111,16 +144,23 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
             print(f"[INFO] Fine-Tuning activé à partir de : {pretrained_weights}")
             cmd.extend(["-pretrained_weights", pretrained_weights])
 
-        # --- NOUVEAU : LANCEMENT DU MONITORING EN PARALLÈLE ---
-        # On anticipe le chemin du dossier de sortie de nnU-Net
-        # Format: nnUNet_results/Dataset001_NOM/nnUNetTrainer__3d_fullres/fold_0/
+        # --- DÉMARRAGE DU MONITORING EN TÂCHE DE FOND ---
+        run_output_dir = NNUNET_RESULTS / dataset_id / f"nnUNetTrainer__{config}" / f"fold_{f}"
+        run_output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Note : Pour que le monitoring trouve le fichier exact, il faudrait scroller dans le dossier,
-        # mais la commande native nnU-Net va bloquer le script Python principal.
-        # Le monitoring est donc démarré juste AVANT.
+        monitor_thread = threading.Thread(
+            target=monitor_training_log, 
+            args=(run_output_dir, dataset_id, f)
+        )
+        monitor_thread.do_run = True # Permet de tuer le thread proprement plus tard
+        monitor_thread.start()
         
-        # Lancement de la commande
+        # --- LANCEMENT DE L'ENTRAÎNEMENT ---
         run_command(cmd)
+        
+        # Quand l'entraînement est fini, on dit au thread de s'arrêter
+        monitor_thread.do_run = False
+        monitor_thread.join()
 
 def do_predict(dataset_id: str, config: str, fold: str, input_folder: str, output_folder: str):
     print(f"--- DÉMARRAGE INFÉRENCE (Dataset {dataset_id} | Config: {config} | Fold: {fold}) ---")
