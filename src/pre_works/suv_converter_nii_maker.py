@@ -6,37 +6,42 @@ import pydicom
 import SimpleITK as sitk
 
 from src.suv_conversion import (  
-    read_dicom_series,            # loads a DICOM series as sitk.Image
-    extract_patient_parameters,   # dose/weight/times/half-life/sex from a PET DICOM header
-    compute_suv_factors,          # computes SUV factors; we'll use SUVbw
-    write_normalized_image        # scales & writes an image; appends run info to a log
+    extract_patient_parameters,   # Extrait dose/poids/demi-vie depuis l'en-tête DICOM
+    compute_suv_factors,          # Calcule le facteur mathématique SUVbw
+    write_normalized_image        # Multiplie l'image par le facteur et sauvegarde
 )
 
+# =====================================================================
+# FONCTIONS UTILITAIRES DE RECHERCHE ET FORMATAGE DES MÉTADONNÉES
+# =====================================================================
 
 def _find_pet_header_with_rph(dir_path: Path):
     """
-    Return a PET (Modality 'PT') DICOM dataset from dir_path that contains
-    RadiopharmaceuticalInformationSequence. Else (None, None).
+    Parcourt RÉCURSIVEMENT un dossier pour trouver UN fichier DICOM TEP (PT) valide
+    qui contient notre fameuse séquence d'informations radiopharmaceutiques.
+    Grâce au rglob("*"), peu importe si l'ingesteur a mis les fichiers dans un sous-dossier UID !
     """
     for f in dir_path.rglob("*"):
         if not f.is_file():
             continue
         try:
+            # stop_before_pixels=True : Astuce d'optimisation vitale. 
+            # On ne charge QUE le texte (l'en-tête), pas la lourde matrice d'image.
             ds = pydicom.dcmread(str(f), stop_before_pixels=True, force=True)
         except Exception:
             continue
+            
+        # On vérifie que c'est bien un TEP ("PT") ET qu'il a les infos d'injection
         if getattr(ds, "Modality", None) == "PT" and hasattr(ds, "RadiopharmaceuticalInformationSequence"):
             return ds, f
+            
     return None, None
-
 
 def _load_csv_params(csv_path: Path):
     """
-    Load fallback SUV parameters from CSV into a dict by subject_id.
-    Expected columns (all optional except subject_id; missing become empty strings):
-      subject_id, injected_dose, patient_weight, patient_height, half_life,
-      injection_time, series_time, sex
-    NOTE: Units must be consistent with your suv_conv.compute_suv_factors() expectations.
+    Charge un CSV de secours (Fallback). Si le PACS de l'hôpital a effacé le poids 
+    de la patiente dans le DICOM (ça arrive souvent pour des raisons de RGPD), 
+    on peut le fournir manuellement via ce CSV.
     """
     if not csv_path:
         return {}
@@ -50,17 +55,15 @@ def _load_csv_params(csv_path: Path):
             db[sid] = row
     return db
 
-
 def _row_to_params(row: dict):
     """
-    Convert a CSV row dict into the params dict expected by compute_suv_factors().
-    Missing values default to 0/UNKNOWN.
+    Convertit une ligne brute du CSV de secours en un dictionnaire de types propres (float, str)
+    compréhensible par la fonction compute_suv_factors().
     """
     def fget(name, default=""):
         v = row.get(name, default)
         return "" if v is None else str(v).strip()
 
-    # Convert numerics safely
     def ffloat(s, default=0.0):
         try:
             return float(s)
@@ -68,164 +71,163 @@ def _row_to_params(row: dict):
             return default
 
     return {
-        "injected_dose": ffloat(fget("injected_dose", 0.0)),     # Keep units consistent with your DICOM/site
-        "patient_weight": ffloat(fget("patient_weight", 0.0)),   # kg
-        "patient_height": ffloat(fget("patient_height", 0.0)),   # meters
-        "half_life": ffloat(fget("half_life", 0.0)),             # seconds (F-18 ~ 6586.2)
-        "injection_time": fget("injection_time", "000000"),      # HHMMSS(.ffffff) as string
-        "series_time": fget("series_time", "000000"),            # HHMMSS(.ffffff) as string
+        "injected_dose": ffloat(fget("injected_dose", 0.0)),
+        "patient_weight": ffloat(fget("patient_weight", 0.0)),
+        "patient_height": ffloat(fget("patient_height", 0.0)),
+        "half_life": ffloat(fget("half_life", 0.0)),
+        "injection_time": fget("injection_time", "000000"),
+        "series_time": fget("series_time", "000000"),
         "patient_sex": fget("sex", "UNKNOWN")
     }
 
 
+# =====================================================================
+# FONCTION PRINCIPALE (L'ORCHESTRATEUR SUV)
+# =====================================================================
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert PET (TEP) DICOM to SUVbw NIfTI, ignoring IRM/TDM if present."
+        description="Convertit un NIfTI TEP brut (Plastimatch) en TEP SUVbw en utilisant les en-têtes DICOM."
     )
-    parser.add_argument("input_root", type=Path, help="Root with subject_xxx subfolders (each may contain IRM/, TDM/, TEP/).")
-    # parser.add_argument("output_root", type=Path, help="Root where subject_xxx/subject_xxx_TEP.nii.gz will be written.") 
-    # Deleting that line, since we no more need another output dir. In fact, we willl write directly in the input_dir, in the imgs subdir
-
+    # L'input_root correspondra à notre "PROJET_PETCT_RACINE"
+    parser.add_argument("input_root", type=Path, help="Dossier racine contenant les subject_xxx")
     parser.add_argument("--metadata-csv", type=Path, default=None,
-                        help="Optional CSV fallback with SUV parameters per subject_id "
-                             "(columns: subject_id, injected_dose, patient_weight, patient_height, half_life, injection_time, series_time, sex)")
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs.")
+                        help="Fichier CSV optionnel de secours pour les paramètres cliniques manquants.")
+    parser.add_argument("--overwrite", action="store_true", help="Écrase les fichiers SUV existants.")
     args = parser.parse_args()
 
     input_root: Path = args.input_root
-    output_root: Path = args.output_root
-    output_root.mkdir(parents=True, exist_ok=True)
-
-    global_log = os.path.join(output_root, "suv_conversion_log.txt")
-    # Open once to stamp the run header (use utf-8 to avoid Windows codepage issues)
+    
+    # Création du fichier de log pour tracer toutes les erreurs (Très important pour la reproductibilité)
+    global_log = os.path.join(input_root, "suv_conversion_log.txt")
     with open(global_log, "a", encoding="utf-8") as log:
         log.write("\n================= SUV CONVERSION START =================\n")
-        log.write(f"Input root: {input_root}\nOutput root: {output_root}\n")
+        log.write(f"Input root: {input_root}\n")
 
     csv_db = _load_csv_params(args.metadata_csv) if args.metadata_csv else {}
 
+    # Découverte de tous les dossiers patients dans la racine
     subjects = sorted([p for p in input_root.iterdir() if p.is_dir()])
     if not subjects:
-        print(f"No subject folders found under: {input_root}")
-        with open(global_log, "a", encoding="utf-8") as log:
-            log.write("No subjects found. Exiting.\n")
-            log.write("================== SUV CONVERSION END ==================\n")
+        print(f"[ERREUR] Aucun dossier patient trouvé sous: {input_root}")
         return
 
-    n_total = 0
-    n_converted = 0
-    n_skipped_no_tep = 0
-    n_skipped_read_fail = 0
-    n_skipped_params = 0
-    n_exists = 0
+    # Initialisation des compteurs pour le résumé de fin de script
+    n_total, n_converted, n_skipped_no_raw, n_skipped_params, n_exists = 0, 0, 0, 0, 0
 
-    print(f"Found {len(subjects)} subject folder(s).")
+    print(f"Trouvé {len(subjects)} dossier(s) patient.")
+    
     for subj_dir in subjects:
         subject_id = subj_dir.name
         n_total += 1
         print(f"\n[SUBJ] {subject_id}")
 
-        # Only PET is handled. IRM/ and TDM/ are ignored by design.
-        tep_dir = subj_dir / "TEP"
-        if not tep_dir.exists():
-            print(f"[SKIP] No PET folder found at {tep_dir}")
-            with open(global_log, "a", encoding="utf-8") as log:
-                log.write(f"[SKIP] {subject_id}: no TEP/ folder.\n")
-            n_skipped_no_tep += 1
-            continue
+        # --- 1. DÉFINITION DES CHEMINS ---
+        # Le dossier contenant les DICOM originaux (pour lire les métadonnées)
+        tep_dicom_dir = subj_dir / "TEP"
+        # Le dossier contenant les images NIfTI (pour lire le RAW et écrire le SUV)
+        imgs_dir = subj_dir / "imgs"
+        
+        # Le fichier généré par Plastimatch lors de l'ingestion ! (Valeurs en Bq/mL)
+        raw_tep_path = imgs_dir / f"{subject_id}_TEP_RAW.nii.gz"
+        # Le fichier cible que l'on veut créer (Valeurs en SUVbw)
+        out_tep_path = imgs_dir / f"{subject_id}_TEP_SUV.nii.gz"
 
-        # New : The dir where we write is the input dir
-        imgs_dir = input_root / subject_id / "imgs"
-        imgs_dir.mkdir(parents=True, exist_ok=True)
-        out_tep = imgs_dir / f"{subject_id}_TEP_SUV.nii.gz"
-
-        if out_tep.exists() and not args.overwrite:
-            print(f"[OK  ] Output exists, skipping (use --overwrite to redo): {out_tep}")
+        # --- 2. VÉRIFICATIONS PRÉALABLES ---
+        if out_tep_path.exists() and not args.overwrite:
+            print(f"[OK  ] Le fichier SUV existe déjà, on ignore (utiliser --overwrite pour forcer) : {out_tep_path.name}")
             n_exists += 1
             continue
 
-        # (1) Read PET image
-        pet_img = read_dicom_series(str(tep_dir))
-        if pet_img is None:
-            print(f"[SKIP] PET: could not read series in {tep_dir}")
+        if not raw_tep_path.exists():
+            print(f"[SKIP] TEP Brut introuvable (Plastimatch n'a pas tourné ?) : {raw_tep_path.name}")
             with open(global_log, "a", encoding="utf-8") as log:
-                log.write(f"[SKIP] {subject_id}: PET read failed from {tep_dir}\n")
-            n_skipped_read_fail += 1
+                log.write(f"[SKIP] {subject_id}: Fichier TEP_RAW manquant.\n")
+            n_skipped_no_raw += 1
             continue
 
-        # (2) Get PET header with radiopharm info. If missing, try CSV fallback.
-        ds, _ = _find_pet_header_with_rph(tep_dir)
+        # --- 3. CHARGEMENT DE LA GÉOMÉTRIE (VIA LE NIFTI DE PLASTIMATCH) ---
+        # On lit l'image NIfTI brute. sitkFloat32 garantit qu'on a la précision requise pour la multiplication mathématique.
+        try:
+            pet_img = sitk.ReadImage(str(raw_tep_path), sitk.sitkFloat32)
+        except Exception as e:
+            print(f"[ERREUR] Impossible de lire {raw_tep_path.name}: {e}")
+            continue
+
+        # --- 4. RECHERCHE DE LA PHYSIQUE (VIA LES DICOMS) ---
+        # On fouille dans le dossier TEP pour trouver le poids de la patiente et l'heure d'injection
+        ds, _ = _find_pet_header_with_rph(tep_dicom_dir)
         params = None
+        
         if ds is not None:
             try:
                 params = extract_patient_parameters(ds)
-            except Exception as e:
+            except Exception:
                 params = None
 
+        # Si le DICOM était corrompu ou anonymisé trop brutalement, on tente le CSV
         if params is None:
-            # Fallback: CSV row for this subject (if provided)
             row = csv_db.get(subject_id)
             if row:
                 params = _row_to_params(row)
 
         if params is None:
-            print(f"[SKIP] PET: no radiopharmaceutical metadata found and no CSV fallback for {subject_id}")
+            print(f"[SKIP] Impossible de trouver les métadonnées (Poids/Dose) pour {subject_id}")
             with open(global_log, "a", encoding="utf-8") as log:
-                log.write(f"[SKIP] {subject_id}: missing PET parameters (no RPH in DICOM and no CSV row)\n")
+                log.write(f"[SKIP] {subject_id}: Métadonnées manquantes (Pas de RPH dans le DICOM, pas de CSV).\n")
             n_skipped_params += 1
             continue
 
-        # Optional: if half-life missing but you know tracer is F-18, you can set a default
+        # Sécurité : Si la demi-vie du traceur est absente, on assume que c'est du FDG (Fluor-18)
+        # La demi-vie physique du Fluor-18 est d'environ 109.77 minutes, soit 6586.2 secondes.
         if not params.get("half_life") or params["half_life"] == 0.0:
-            # F-18 physical half-life ~6586.2 s
             params["half_life"] = 6586.2
 
+        # --- 5. CALCUL DU FACTEUR DE CONVERSION ---
         try:
             factors = compute_suv_factors(params)
+            # SUVbw = Standardized Uptake Value par Body Weight (Poids corporel)
             suv_factor = float(factors.get("SUVbw", 0.0))
         except Exception as e:
-            print(f"[SKIP] PET: SUV factor computation failed ({e})")
-            with open(global_log, "a", encoding="utf-8") as log:
-                log.write(f"[SKIP] {subject_id}: SUV factor computation failed: {e}\n")
+            print(f"[SKIP] Échec du calcul mathématique du facteur SUV ({e})")
             n_skipped_params += 1
             continue
 
-        # (3) Scale & write SUVbw PET NIfTI (write_normalized_image appends to log)
+        # --- 6. APPLICATION ET SAUVEGARDE ---
         try:
+            # Magie de SimpleITK : on donne l'image brute, la fonction de ta librairie 
+            # la multiplie par suv_factor et sauvegarde le tout !
             write_normalized_image(
                 image=pet_img,
-                output_path=str(out_tep),
+                output_path=str(out_tep_path),
                 factor=suv_factor,
                 log_path=global_log
             )
-            print(f"[OK  ] Wrote PET SUVbw NIfTI: {out_tep}")
+            print(f"[OK  ] Succès : {out_tep_path.name} généré (Facteur: {suv_factor:.6f})")
             n_converted += 1
         except Exception as e:
-            print(f"[ERROR] PET write failed: {e}")
+            print(f"[ERREUR] Impossible de sauvegarder le NIfTI SUV: {e}")
             with open(global_log, "a", encoding="utf-8") as log:
-                log.write(f"[ERROR] {subject_id}: PET write failed: {e}\n")
-            n_skipped_read_fail += 1
+                log.write(f"[ERREUR] {subject_id}: Échec de l'écriture du fichier: {e}\n")
 
-    # Summary
-    print("\n===== Summary =====")
-    print(f"Subjects total         : {n_total}")
-    print(f"Converted (SUVbw)      : {n_converted}")
-    print(f"Skipped (no TEP/)      : {n_skipped_no_tep}")
-    print(f"Skipped (read failure) : {n_skipped_read_fail}")
-    print(f"Skipped (no params)    : {n_skipped_params}")
-    print(f"Skipped (exists)       : {n_exists}")
+    # =================================================================
+    # RÉSUMÉ DU RUN
+    # =================================================================
+    print("\n===== RÉSUMÉ DE LA CONVERSION SUV =====")
+    print(f"Patients totaux analysés : {n_total}")
+    print(f"Convertis avec succès    : {n_converted}")
+    print(f"Ignorés (Pas de RAW)     : {n_skipped_no_raw}")
+    print(f"Ignorés (Pas de Params)  : {n_skipped_params}")
+    print(f"Ignorés (Déjà existant)  : {n_exists}")
 
     with open(global_log, "a", encoding="utf-8") as log:
         log.write("\n===== Summary =====\n")
         log.write(f"Subjects total         : {n_total}\n")
         log.write(f"Converted (SUVbw)      : {n_converted}\n")
-        log.write(f"Skipped (no TEP/)      : {n_skipped_no_tep}\n")
-        log.write(f"Skipped (read failure) : {n_skipped_read_fail}\n")
+        log.write(f"Skipped (no RAW pet)   : {n_skipped_no_raw}\n")
         log.write(f"Skipped (no params)    : {n_skipped_params}\n")
         log.write(f"Skipped (exists)       : {n_exists}\n")
         log.write("================== SUV CONVERSION END ==================\n")
 
-
 if __name__ == "__main__":
     main()
- 
