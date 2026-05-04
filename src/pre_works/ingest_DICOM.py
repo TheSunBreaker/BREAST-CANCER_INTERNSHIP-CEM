@@ -152,6 +152,23 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                     "time": meta["SeriesTime"],
                     "desc": description
                 })
+            else:
+                print(f"[IRM Secondaire Archivée] {description} (Patient: {patient_id})")
+                
+                # On nettoie la description pour en faire un nom de fichier valide (pas d'espaces ou de /)
+                clean_desc = "".join(c if c.isalnum() else "_" for c in description)
+                # On enlève les underscores multiples pour faire plus propre
+                clean_desc = "_".join(filter(None, clean_desc.split("_")))
+                
+                # On crée le dossier d'archivage
+                autres_dir = os.path.join(out_mri_root, patient_id, "autres_irm")
+                os.makedirs(autres_dir, exist_ok=True)
+                
+                # Le fichier s'appellera par exemple : DUKE_001_T2_TSE_AXIAL.nii.gz
+                out_path = os.path.join(autres_dir, f"{patient_id}_{clean_desc}.nii.gz")
+                
+                print(f" -> Conversion IRM Secondaire via Plastimatch vers : {out_path}")
+                convert_files_to_nifti_plastimatch(file_paths, out_path)
 
     # --- 3. TRAITEMENT ET TRI TEMPOREL DES PHASES IRM ---
     print("\n--- 3. CONVERSION ET TRI CHRONOLOGIQUE DES PHASES IRM ---")
