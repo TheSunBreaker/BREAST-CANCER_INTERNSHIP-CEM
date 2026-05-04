@@ -13,6 +13,48 @@ import pydicom
 import SimpleITK as sitk
 from collections import defaultdict
 
+import tempfile
+import subprocess
+
+def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bool:
+    """
+    Convertit une liste de fichiers DICOM en NIfTI en utilisant Plastimatch.
+    Isole les fichiers dans un dossier temporaire pour garantir que Plastimatch 
+    ne lise que la série exacte identifiée par notre routage (SeriesInstanceUID).
+    """
+    if not file_paths:
+        return False
+        
+    # Création d'un dossier temporaire qui s'auto-détruira à la fin du bloc 'with'
+    with tempfile.TemporaryDirectory() as tmp_dicom_dir:
+        # 1. Copie des fichiers de la série dans le dossier isolé
+        for f in file_paths:
+            shutil.copy2(f, tmp_dicom_dir)
+            
+        # 2. Appel de Plastimatch
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # On fait une conversion pure (--output-type float). 
+            # On ne fait PAS de recalage ici, notre spatial_standardizer le fera plus tard.
+            commande = [
+                "plastimatch", "convert",
+                "--input", tmp_dicom_dir,
+                "--output-img", output_path,
+                "--output-type", "float"
+            ]
+            
+            # stdout=subprocess.DEVNULL rend Plastimatch silencieux pour ne pas polluer la console
+            subprocess.run(commande, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            print(f"   [ERREUR] Plastimatch a échoué lors de la conversion : {e}")
+            return False
+        except FileNotFoundError:
+            print("   [ERREUR FATALE] L'outil 'plastimatch' n'est pas installé ou n'est pas dans le PATH système.")
+            return False
+
 def scan_and_group_dicoms(root_dir: str) -> dict:
     """
     Parcourt récursivement un dossier et regroupe tous les fichiers DICOM valides
@@ -57,26 +99,6 @@ def get_series_metadata(file_paths: list) -> dict:
     except Exception:
         return {}
 
-def convert_files_to_nifti(file_paths: list, output_path: str) -> bool:
-    """
-    Prend une liste de fichiers DICOM appartenant à la même série et les convertit en NIfTI.
-    """
-    if not file_paths:
-        return False
-        
-    reader = sitk.ImageSeriesReader()
-    # On donne directement la liste des fichiers à SimpleITK, contournant le problème des dossiers
-    reader.SetFileNames(file_paths)
-    
-    try:
-        image = reader.Execute()
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        sitk.WriteImage(image, output_path)
-        return True
-    except Exception as e:
-        print(f"   [ERREUR] Conversion échouée pour {output_path} : {e}")
-        return False
-
 def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str, dict_anonymisation: dict = None):
     
     # 1. On scanne tout et on regroupe par série, peu importe l'organisation des dossiers
@@ -102,18 +124,24 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             print(f"[{modality}] {description} (Patient: {patient_id})")
             
             if modality == "PT":
-                # On copie les DICOM bruts PET vers un nouveau dossier propre pour le script SUV
+                # 1. Copie pour le calcul SUV
                 tep_dicom_dir = os.path.join(out_petct_root, patient_id, "TEP", series_uid)
                 os.makedirs(tep_dicom_dir, exist_ok=True)
                 for f in file_paths:
                     shutil.copy2(f, tep_dicom_dir)
                 print(f" -> Copie des {len(file_paths)} fichiers DICOM PET effectuée.")
                 
+                # 2. Génération du PET Brut (en Becquerels) via Plastimatch
+                imgs_dir = os.path.join(out_petct_root, patient_id, "imgs")
+                out_raw_pet_path = os.path.join(imgs_dir, f"{patient_id}_TEP_RAW.nii.gz")
+                print(f" -> Conversion PET Brut via Plastimatch vers : {out_raw_pet_path}")
+                convert_files_to_nifti_plastimatch(file_paths, out_raw_pet_path)
+                
             else: # CT
                 imgs_dir = os.path.join(out_petct_root, patient_id, "imgs")
                 out_path = os.path.join(imgs_dir, f"{patient_id}_TDM.nii.gz")
-                print(f" -> Conversion CT vers : {out_path}")
-                convert_files_to_nifti(file_paths, out_path)
+                print(f" -> Conversion CT via Plastimatch vers : {out_path}")
+                convert_files_to_nifti_plastimatch(file_paths, out_path)
                 
         # --- ROUTAGE IRM (Filtre strict) ---
         elif modality == "MR":
@@ -134,8 +162,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         
         for index, phase in enumerate(phases_triees):
             out_path = os.path.join(imgs_dir, f"{patient_id}_{index:04d}.nii.gz")
-            print(f" -> IRM Phase {index} ({phase['desc']}) vers : {out_path}")
-            convert_files_to_nifti(phase["files"], out_path)
+            print(f" -> IRM Phase {index} ({phase['desc']}) via Plastimatch vers : {out_path}")
+            convert_files_to_nifti_plastimatch(phase["files"], out_path)
 
     print("\n=== INGÉSTION TERMINÉE AVEC SUCCÈS ===")
 
