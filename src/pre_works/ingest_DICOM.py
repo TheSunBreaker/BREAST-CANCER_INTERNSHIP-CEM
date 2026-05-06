@@ -12,6 +12,7 @@ import shutil
 import pydicom
 import SimpleITK as sitk
 from collections import defaultdict
+from tqdm import tqdm # Pour avoir une barre de progression (Le processus pouvant être asez long, c'est toujours bon d'avoir des indices visuels de progression)
 
 import tempfile
 import subprocess
@@ -63,20 +64,24 @@ def scan_and_group_dicoms(root_dir: str) -> dict:
     """
     print("--- 1. SCAN ET REGROUPEMENT DES SÉRIES DICOM ---")
     series_dict = defaultdict(list)
-    
+
+    files_list = []
     for root, _, files in os.walk(root_dir):
         for file in files:
-            file_path = os.path.join(root, file)
-            try:
-                # Lecture rapide de l'en-tête (sans charger les lourds pixels en mémoire)
-                ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+            files_list.append(os.path.join(root, file))
+
+    print(f"Analyse de {len(files_list)} fichiers en cours...")
+    for file_path in tqdm(files_list, desc="Scan DICOM"):
+        try:
+            # Lecture rapide de l'en-tête (sans charger les lourds pixels en mémoire)
+            ds = pydicom.dcmread(file_path, stop_before_pixels=True)
                 
-                # Le SeriesInstanceUID est l'identifiant strict d'une séquence
-                if hasattr(ds, 'SeriesInstanceUID'):
-                    series_dict[ds.SeriesInstanceUID].append(file_path)
-            except Exception:
+            # Le SeriesInstanceUID est l'identifiant strict d'une séquence
+             if hasattr(ds, 'SeriesInstanceUID'):
+                series_dict[ds.SeriesInstanceUID].append(file_path)
+        except Exception:
                 # Ce n'est pas un DICOM valide (ex: un .txt ou un fichier caché OS)
-                continue
+            continue
                 
     print(f" -> {len(series_dict)} séries uniques trouvées dans l'arborescence.\n")
     return series_dict
