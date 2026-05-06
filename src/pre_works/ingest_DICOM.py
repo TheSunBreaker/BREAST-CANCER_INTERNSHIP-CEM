@@ -104,7 +104,7 @@ def get_series_metadata(file_paths: list) -> dict:
     except Exception:
         return {}
 
-def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str, dict_anonymisation: dict = None):
+def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str, out_others_root: str, dict_anonymisation: dict = None):
     
     # 1. On scanne tout et on regroupe par série, peu importe l'organisation des dossiers
     series_groups = scan_and_group_dicoms(raw_data_root)
@@ -174,6 +174,47 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 
                 print(f" -> Conversion IRM Secondaire via Plastimatch vers : {out_path}")
                 convert_files_to_nifti_plastimatch(file_paths, out_path)
+
+        # --- NOUVEAU : INTERCEPTION DES MASQUES (RTSTRUCT et SEG) ---
+        elif modality in ["RTSTRUCT", "SEG"]:
+            desc_lower = description.lower()
+
+            # Pourquoi l'heuristique series_uid[-5:] ? C'est une sécurité vitale : un médecin peut avoir dessiné 3 masques différents (par exemple : un masque de la tumeur, un masque des ganglions lymphatiques, 
+            # et un masque du cœur pour éviter de l'irradier), qui auront tous la même modalité. En utilisant les 5 derniers caractères du SeriesInstanceUID, on s'assure qu'ils ne s'écrasent pas les uns les autres
+            # dans le même dossier.
+            
+            # Heuristique simple : on regarde si le mot MR ou IRM est dans la description
+            # pour deviner à quelle modalité ce masque appartient.
+            if "mr" in desc_lower or "irm" in desc_lower:
+                print(f" [MASQUE IRM ISOLÉ] Modality: {modality} | Desc: {description} (Patient: {patient_id})")
+                # On le range dans la base IRM
+                mask_dir = os.path.join(out_mri_root, patient_id, "dicom_mask_rm", series_uid[-5:])
+            else:
+                print(f" [MASQUE PET/CT ISOLÉ] Modality: {modality} | Desc: {description} (Patient: {patient_id})")
+                # Par défaut (ou si mention de CT/PT), on le range dans la base PET/CT
+                mask_dir = os.path.join(out_petct_root, patient_id, "dicom_mask_pet", series_uid[-5:])
+                
+            os.makedirs(mask_dir, exist_ok=True)
+            for f in file_paths:
+                shutil.copy2(f, mask_dir)
+
+        # --- ARCHIVAGE DES MODALITÉS INCONNUES (The "Others" Data Lake) ---
+        else:
+            print(f" [ARCHIVÉ] Modalité '{modality}' : {description} (Patient: {patient_id})")
+            
+            # Nettoyage du nom pour le dossier
+            clean_desc = "".join(c if c.isalnum() else "_" for c in description)
+            clean_desc = "_".join(filter(None, clean_desc.split("_")))
+            if not clean_desc:
+                clean_desc = "SANS_DESCRIPTION"
+            
+            # Création de l'arborescence : Base_Autres / PatientID / Modalité / Description
+            other_dicom_dir = os.path.join(out_others_root, patient_id, modality, f"{clean_desc}_{series_uid[-5:]}")
+            os.makedirs(other_dicom_dir, exist_ok=True)
+            
+            # On copie les DICOMs bruts (pas de conversion Plastimatch pour éviter les crashs)
+            for f in file_paths:
+                shutil.copy2(f, other_dicom_dir)
 
     # --- 3. TRAITEMENT ET TRI TEMPOREL DES PHASES IRM ---
     print("\n--- 3. CONVERSION ET TRI CHRONOLOGIQUE DES PHASES IRM ---")
