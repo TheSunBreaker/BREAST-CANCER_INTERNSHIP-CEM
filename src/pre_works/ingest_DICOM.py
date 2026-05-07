@@ -5,7 +5,13 @@ Groupe les fichiers par SeriesInstanceUID pour gérer les dossiers "fourre-tout"
 extrait les métadonnées de chaque série, filtre (T1/DCE, CT, PET) et convertit en NIfTI.
 """
 
-# IMPORTANT : Ce code ne gère pas la conversion en SUV val, ilf audra donc le faire à part
+"""
+ATTENTION, IL EST NECESSAIRE, POUR UTILISER CE SCRIPT, D'INSTALLER PLASTIMATCH SUR SA MACHINE VIA LE LIEN https://sourceforge.net/projects/plastimatch/postdownload POUR WINDOWS, PUIS
+D'EXTRAIRE LES FICHIERS AVEC UNE COMMANDE DU STYLE 'msiexec /a "C:\Users\coul0426\Downloads\Plastimatch-1.9.4-win64.msi" /qb TARGETDIR="C:\Users\coul0426\plastimatch_portable"'. Le binaire sera alors à 
+'C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plastimatch.exe'
+"""
+
+# IMPORTANT : Ce code ne gère pas la conversion en SUV val, il faudra donc le faire à part
 
 import os
 import shutil
@@ -16,6 +22,11 @@ from tqdm import tqdm # Pour avoir une barre de progression (Le processus pouvan
 
 import tempfile
 import subprocess
+
+# Chemin vers l'exécutable Plastimatch portable
+# Le "r" devant la chaîne est crucial sous Windows pour éviter que les "\" 
+# ne soient interprétés comme des caractères d'échappement.
+PLASTIMATCH_EXE = r"C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plastimatch.exe"
 
 def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bool:
     """
@@ -38,8 +49,11 @@ def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bo
             
             # On fait une conversion pure (--output-type float). 
             # On ne fait PAS de recalage ici, notre spatial_standardizer le fera plus tard.
+
+            # --- MODIFICATION ICI ---
+            # On remplace "plastimatch" par notre variable PLASTIMATCH_EXE
             commande = [
-                "plastimatch", "convert",
+                PLASTIMATCH_EXE, "convert",
                 "--input", tmp_dicom_dir,
                 "--output-img", output_path,
                 "--output-type", "float"
@@ -53,7 +67,7 @@ def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bo
             print(f"   [ERREUR] Plastimatch a échoué lors de la conversion : {e}")
             return False
         except FileNotFoundError:
-            print("   [ERREUR FATALE] L'outil 'plastimatch' n'est pas installé ou n'est pas dans le PATH système.")
+            print(f"   [ERREUR FATALE] L'exécutable Plastimatch est introuvable au chemin : {PLASTIMATCH_EXE}")
             return False
 
 def scan_and_group_dicoms(root_dir: str) -> dict:
