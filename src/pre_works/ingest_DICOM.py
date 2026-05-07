@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Script d'ingestion DICOM robuste.
 Groupe les fichiers par SeriesInstanceUID pour gérer les dossiers "fourre-tout" des hôpitaux,
 extrait les métadonnées de chaque série, filtre (T1/DCE, CT, PET) et convertit en NIfTI.
@@ -90,7 +90,7 @@ def scan_and_group_dicoms(root_dir: str) -> dict:
             ds = pydicom.dcmread(file_path, stop_before_pixels=True)
                 
             # Le SeriesInstanceUID est l'identifiant strict d'une séquence
-             if hasattr(ds, 'SeriesInstanceUID'):
+            if hasattr(ds, 'SeriesInstanceUID'):
                 series_dict[ds.SeriesInstanceUID].append(file_path)
         except Exception:
                 # Ce n'est pas un DICOM valide (ex: un .txt ou un fichier caché OS)
