@@ -81,7 +81,15 @@ def scan_and_group_dicoms(root_dir: str) -> dict:
     files_list = []
     for root, _, files in os.walk(root_dir):
         for file in files:
-            files_list.append(os.path.join(root, file))
+            # 1. On crée le chemin absolu direct (Pour prévenir tout souci de longueur de caractère de plus de 260 octets (qui ont causé de gros bugs lors de tests avec le QIN dataset), on va opter pour la stat du 
+            # chemin absolu)
+            abs_path = os.path.abspath(os.path.join(root, file))
+            
+            # 2. LE FIX MAGIQUE POUR WINDOWS : On ajoute le préfixe \\?\
+            if os.name == 'nt' and not abs_path.startswith('\\\\?\\'):
+                abs_path = '\\\\?\\' + abs_path
+                
+            files_list.append(abs_path)
 
     print(f"Analyse de {len(files_list)} fichiers en cours...")
     for file_path in tqdm(files_list, desc="Scan DICOM"):
