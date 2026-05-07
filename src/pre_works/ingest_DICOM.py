@@ -87,7 +87,7 @@ def scan_and_group_dicoms(root_dir: str) -> dict:
     for file_path in tqdm(files_list, desc="Scan DICOM"):
         try:
             # Lecture rapide de l'en-tête (sans charger les lourds pixels en mémoire)
-            ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+            ds = pydicom.dcmread(file_path, stop_before_pixels=True, force=True)
                 
             # Le SeriesInstanceUID est l'identifiant strict d'une séquence
             if hasattr(ds, 'SeriesInstanceUID'):
@@ -107,7 +107,7 @@ def get_series_metadata(file_paths: list) -> dict:
         return {}
         
     try:
-        ds = pydicom.dcmread(file_paths[0], stop_before_pixels=True)
+        ds = pydicom.dcmread(file_paths[0], stop_before_pixels=True, force=True)
         return {
             "PatientID": str(getattr(ds, "PatientID", "UNKNOWN")),
             "Modality": str(getattr(ds, "Modality", "UNKNOWN")),
