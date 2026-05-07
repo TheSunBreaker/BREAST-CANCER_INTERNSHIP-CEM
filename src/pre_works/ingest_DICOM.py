@@ -3,9 +3,8 @@
 Script d'ingestion DICOM robuste.
 Groupe les fichiers par SeriesInstanceUID pour gérer les dossiers "fourre-tout" des hôpitaux,
 extrait les métadonnées de chaque série, filtre (T1/DCE, CT, PET) et convertit en NIfTI.
-"""
 
-"""
+
 ATTENTION, IL EST NECESSAIRE, POUR UTILISER CE SCRIPT, D'INSTALLER PLASTIMATCH SUR SA MACHINE VIA LE LIEN https://sourceforge.net/projects/plastimatch/postdownload POUR WINDOWS, PUIS
 D'EXTRAIRE LES FICHIERS AVEC UNE COMMANDE DU STYLE 'msiexec /a "C:\Users\coul0426\Downloads\Plastimatch-1.9.4-win64.msi" /qb TARGETDIR="C:\Users\coul0426\plastimatch_portable"'. Le binaire sera alors à 
 'C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plastimatch.exe'
