@@ -8,6 +8,11 @@ extrait les métadonnées de chaque série, filtre (T1/DCE, CT, PET) et converti
 ATTENTION, IL EST NECESSAIRE, POUR UTILISER CE SCRIPT, D'INSTALLER PLASTIMATCH SUR SA MACHINE VIA LE LIEN https://sourceforge.net/projects/plastimatch/postdownload POUR WINDOWS, PUIS
 D'EXTRAIRE LES FICHIERS AVEC UNE COMMANDE DU STYLE 'msiexec /a "C:\Users\coul0426\Downloads\Plastimatch-1.9.4-win64.msi" /qb TARGETDIR="C:\Users\coul0426\plastimatch_portable"'. Le binaire sera alors à 
 'C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plastimatch.exe'
+
+
+LE ROI DE DICOM TO NII COTE PET ET CT C'EST PLASTIMATCH. PAR CONTRE, POUR LES IRMS, PLASTIMATCH A TENDANCE A ECHOUER. SURTOUT POUR DES IRMS EXOTIQUES. COMME UN DCE 4D. EXACTEMENT
+ CE QUI NOUS INTERESSE. DONC, ON A RECOURT AU ROI DE L'IRM dcm2niix. QUAND CE SERA IRM, ON AURA RECOURT A LUI. IL FAUT DONC TELECHARGER LE ZIP SUR LE GIT "https://github.com/rordenlab/dcm2niix/releases",
+ ET EXTRAIRE POUR AVOIR LE ".exe". DANS MON CAS, JE L'AI MIT AU "C:\Users\coul0426\dcm2niix_portable\dcm2niix.exe". 
 """
 
 # IMPORTANT : Ce code ne gère pas la conversion en SUV val, il faudra donc le faire à part
@@ -26,6 +31,62 @@ import subprocess
 # Le "r" devant la chaîne est crucial sous Windows pour éviter que les "\" 
 # ne soient interprétés comme des caractères d'échappement.
 PLASTIMATCH_EXE = r"C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plastimatch.exe"
+# --- NOUVELLE ARME POUR L'IRM ---
+DCM2NIIX_EXE = r"C:\Users\coul0426\dcm2niix_portable\dcm2niix.exe"
+
+def convert_files_to_nifti_dcm2niix(file_paths: list, output_dir: str, file_prefix: str) -> bool:
+    """
+    Convertit une liste de fichiers DICOM IRM en NIfTI en utilisant dcm2niix.
+    Gère intelligemment les séquences 4D (DWI, DCE, T1-MAP) sans crasher.
+    """
+    if not file_paths:
+        return False
+        
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Sous-dossiers isolés pour l'input et l'output
+        dicom_dir = os.path.join(tmp_dir, "dicoms")
+        nifti_dir = os.path.join(tmp_dir, "nifti")
+        os.makedirs(dicom_dir)
+        os.makedirs(nifti_dir)
+        
+        for f in file_paths:
+            shutil.copy2(f, dicom_dir)
+            
+        try:
+            # Commande dcm2niix :
+            # -z y : Compresse en .nii.gz
+            # -f : Format du nom de fichier de sortie
+            # -o : Dossier de destination
+            commande = [
+                DCM2NIIX_EXE,
+                "-z", "y",
+                "-f", file_prefix,
+                "-o", nifti_dir,
+                dicom_dir
+            ]
+            
+            subprocess.run(commande, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            
+            # dcm2niix a parfois la bonne idée de générer plusieurs fichiers pour une même séquence
+            # (par exemple : file_prefix_e1.nii.gz, file_prefix_e2.nii.gz pour les échos multiples)
+            generated_files = glob.glob(os.path.join(nifti_dir, "*.nii.gz"))
+            if not generated_files:
+                return False
+                
+            os.makedirs(output_dir, exist_ok=True)
+            for gf in generated_files:
+                dest = os.path.join(output_dir, os.path.basename(gf))
+                shutil.move(gf, dest)
+                
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            print(f"   [ERREUR] dcm2niix a échoué : {e}")
+            return False
+        except FileNotFoundError:
+            print(f"   [ERREUR FATALE] dcm2niix est introuvable au chemin : {DCM2NIIX_EXE}")
+            return False
+            
 
 def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bool:
     """
@@ -178,21 +239,15 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 })
             else:
                 print(f"[IRM Secondaire Archivée] {description} (Patient: {patient_id})")
-                
-                # On nettoie la description pour en faire un nom de fichier valide (pas d'espaces ou de /)
                 clean_desc = "".join(c if c.isalnum() else "_" for c in description)
-                # On enlève les underscores multiples pour faire plus propre
                 clean_desc = "_".join(filter(None, clean_desc.split("_")))
                 
-                # On crée le dossier d'archivage
                 autres_dir = os.path.join(out_mri_root, patient_id, "autres_irm")
-                os.makedirs(autres_dir, exist_ok=True)
+                file_prefix = f"{patient_id}_{clean_desc}" # dcm2niix a besoin d'un nom de base, pas d'un fichier avec extension
                 
-                # Le fichier s'appellera par exemple : DUKE_001_T2_TSE_AXIAL.nii.gz
-                out_path = os.path.join(autres_dir, f"{patient_id}_{clean_desc}.nii.gz")
-                
-                print(f" -> Conversion IRM Secondaire via Plastimatch vers : {out_path}")
-                convert_files_to_nifti_plastimatch(file_paths, out_path)
+                print(f" -> Conversion IRM Secondaire via dcm2niix vers : {autres_dir}")
+                # --- ON UTILISE dcm2niix ICI ---
+                convert_files_to_nifti_dcm2niix(file_paths, autres_dir, file_prefix)
 
         # --- NOUVEAU : INTERCEPTION DES MASQUES (RTSTRUCT et SEG) ---
         elif modality in ["RTSTRUCT", "SEG"]:
@@ -243,10 +298,12 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         imgs_dir = os.path.join(out_mri_root, patient_id, "imgs")
         
         for index, phase in enumerate(phases_triees):
-            out_path = os.path.join(imgs_dir, f"{patient_id}_{index:04d}.nii.gz")
-            print(f" -> IRM Phase {index} ({phase['desc']}) via Plastimatch vers : {out_path}")
-            convert_files_to_nifti_plastimatch(phase["files"], out_path)
-
+            file_prefix = f"{patient_id}_{index:04d}"
+            print(f" -> IRM Phase {index} ({phase['desc']}) via dcm2niix vers : {imgs_dir}")
+            
+            # --- ON UTILISE dcm2niix ICI ---
+            convert_files_to_nifti_dcm2niix(phase["files"], imgs_dir, file_prefix)
+            
     print("\n=== INGÉSTION TERMINÉE AVEC SUCCÈS ===")
 
 if __name__ == "__main__":
