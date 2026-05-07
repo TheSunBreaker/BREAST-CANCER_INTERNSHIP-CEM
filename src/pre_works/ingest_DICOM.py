@@ -248,10 +248,18 @@ if __name__ == "__main__":
     DOSSIER_DICOM_VRAC = "./data_hopital_brut"
     PROJET_IRM_RACINE = "./Base_IRM"
     PROJET_PETCT_RACINE = "./Base_PETCT"
+    PROJET_AUTRES_RACINE = "./Base_Autres" # <-- NOUVEAU
     
     CORRESPONDANCES = {
         "JEAN_DUPONT_849": "DUKE_001",
         "MARIE_CURIE_112": "DUKE_002"
     }
 
-    ingest_raw_dicoms(DOSSIER_DICOM_VRAC, PROJET_IRM_RACINE, PROJET_PETCT_RACINE, CORRESPONDANCES)
+    # On passe bien les 4 dossiers, puis le dictionnaire à la fin
+    ingest_raw_dicoms(
+        DOSSIER_DICOM_VRAC, 
+        PROJET_IRM_RACINE, 
+        PROJET_PETCT_RACINE, 
+        PROJET_AUTRES_RACINE, 
+        CORRESPONDANCES
+    )
