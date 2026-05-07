@@ -117,7 +117,7 @@ def get_series_metadata(file_paths: list) -> dict:
     except Exception:
         return {}
 
-def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str, out_others_root: str, dict_anonymisation: dict = None):
+def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str, out_others_root: str):
     
     # 1. On scanne tout et on regroupe par série, peu importe l'organisation des dossiers
     series_groups = scan_and_group_dicoms(raw_data_root)
@@ -129,13 +129,11 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         meta = get_series_metadata(file_paths)
         if not meta:
             continue
-            
-        vrai_id = meta["PatientID"]
+
+        # On récupère directement l'ID qui est déjà anonymisé (ex: DUKE_001)
+        patient_id = meta["PatientID"]
         modality = meta["Modality"]
         description = meta["SeriesDescription"]
-        
-        # Anonymisation
-        patient_id = dict_anonymisation.get(vrai_id, vrai_id) if dict_anonymisation else vrai_id
         
         # --- ROUTAGE PET / CT ---
         if modality in ["PT", "CT"]:
@@ -244,21 +242,15 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
     print("\n=== INGÉSTION TERMINÉE AVEC SUCCÈS ===")
 
 if __name__ == "__main__":
-    DOSSIER_DICOM_VRAC = "./data_hopital_brut"
+    DOSSIER_DICOM_VRAC = "./data_hopital_safe"
     PROJET_IRM_RACINE = "./Base_IRM"
     PROJET_PETCT_RACINE = "./Base_PETCT"
     PROJET_AUTRES_RACINE = "./Base_Autres" # <-- NOUVEAU
-    
-    CORRESPONDANCES = {
-        "JEAN_DUPONT_849": "DUKE_001",
-        "MARIE_CURIE_112": "DUKE_002"
-    }
 
-    # On passe bien les 4 dossiers, puis le dictionnaire à la fin
+    # On passe bien les 4 dossiers
     ingest_raw_dicoms(
         DOSSIER_DICOM_VRAC, 
         PROJET_IRM_RACINE, 
         PROJET_PETCT_RACINE, 
-        PROJET_AUTRES_RACINE, 
-        CORRESPONDANCES
+        PROJET_AUTRES_RACINE
     )
