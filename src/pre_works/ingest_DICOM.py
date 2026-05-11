@@ -130,6 +130,57 @@ def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bo
             print(f"   [ERREUR FATALE] L'exécutable Plastimatch est introuvable au chemin : {PLASTIMATCH_EXE}")
             return False
 
+def check_pet_suv_metadata(file_paths: list) -> dict:
+    """
+    Vérifie si les métadonnées nécessaires au calcul SUV sont présentes.
+    Retourne un dict avec les champs trouvés/manquants et l'unité native.
+    """
+    if not file_paths:
+        return {"valid": False, "missing": ["NO_FILES"], "units": "UNKNOWN"}
+
+    try:
+        ds = pydicom.dcmread(file_paths[0], stop_before_pixels=True, force=True)
+        missing = []
+
+        # Récupération de l'unité native (ex: BQML, CNTS, g/ml)
+        units = str(getattr(ds, "Units", "UNKNOWN"))
+
+        # Poids patient (On vérifie aussi qu'il n'est pas vide)
+        if not hasattr(ds, "PatientWeight") or ds.PatientWeight is None or str(ds.PatientWeight).strip() == "":
+            missing.append("PatientWeight")
+
+        # Heure acquisition (On accepte SeriesTime comme backup si AcquisitionTime manque)
+        if not hasattr(ds, "AcquisitionTime") and not hasattr(ds, "SeriesTime"):
+            missing.append("AcquisitionTime/SeriesTime")
+
+        # Infos radiopharmaceutiques
+        if not hasattr(ds, "RadiopharmaceuticalInformationSequence"):
+            missing.append("RadiopharmaceuticalInformationSequence")
+        else:
+            rph = ds.RadiopharmaceuticalInformationSequence[0]
+
+            if not hasattr(rph, "RadionuclideTotalDose") or rph.RadionuclideTotalDose is None:
+                missing.append("RadionuclideTotalDose")
+
+            if not hasattr(rph, "RadionuclideHalfLife") or rph.RadionuclideHalfLife is None:
+                missing.append("RadionuclideHalfLife")
+
+            if not hasattr(rph, "RadiopharmaceuticalStartTime") or rph.RadiopharmaceuticalStartTime is None:
+                missing.append("RadiopharmaceuticalStartTime")
+
+        return {
+            "valid": len(missing) == 0,
+            "missing": missing,
+            "units": units
+        }
+
+    except Exception as e:
+        return {
+            "valid": False,
+            "missing": [f"Erreur de lecture: {str(e)}"],
+            "units": "UNKNOWN"
+        }
+
 def scan_and_group_dicoms(root_dir: str) -> dict:
     """
     Parcourt récursivement un dossier et regroupe tous les fichiers DICOM valides
@@ -209,6 +260,18 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             print(f"[{modality}] {description} (Patient: {patient_id})")
             
             if modality == "PT":
+
+                # --- NOUVEAU : AUDIT QUALITÉ DU PET ---
+                suv_check = check_pet_suv_metadata(file_paths)
+                
+                if suv_check["valid"]:
+                    print(f" -> Métadonnées SUV complètes. (Unité native : {suv_check['units']})")
+                else:
+                    print(f" -> [ATTENTION] Métadonnées SUV manquantes : {suv_check['missing']} (Unité native : {suv_check['units']})")
+
+                if suv_check['units'] != "BQML":
+                    print(f" -> [WARNING] L'unité du PET n'est pas BQML ! ({suv_check['units']}). Prudence pour le calcul SUV.")
+                 
                 # 1. Copie pour le calcul SUV
                 tep_dicom_dir = os.path.join(out_petct_root, patient_id, "TEP", series_uid)
                 os.makedirs(tep_dicom_dir, exist_ok=True)
