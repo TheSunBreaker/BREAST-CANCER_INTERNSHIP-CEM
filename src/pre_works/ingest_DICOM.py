@@ -35,6 +35,9 @@ PLASTIMATCH_EXE = r"C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plast
 # --- NOUVELLE ARME POUR L'IRM ---
 DCM2NIIX_EXE = r"C:\Users\coul0426\dcm2niix_portable\dcm2niix.exe"
 
+# Nombre de phases IRMs de référence
+REF_NB_IRMS_PHASES = 4
+
 def convert_files_to_nifti_dcm2niix(file_paths: list, output_dir: str, file_prefix: str) -> bool:
     """
     Convertit une liste de fichiers DICOM IRM en NIfTI en utilisant dcm2niix.
@@ -257,6 +260,18 @@ def get_series_metadata(file_paths: list) -> dict:
 
 def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str, out_others_root: str):
 
+    # --- INITIALISATION DES COMPTEURS STATISTIQUES ---
+    stats = {
+        "patients": set(),
+        "pet_traites": 0,
+        "ct_traites": 0,
+        "masques_pet": 0,
+        "masques_irm": 0,
+        "autres_modalites": 0,
+        "irm_secondaires": 0
+    }
+    mri_phases_distribution = defaultdict(int) # Pour compter combien de patients ont X phases
+
     # --- INITIALISATION DU RAPPORT DE SYNTHÈSE ---
     rapport_erreurs = [
         "==================================================",
@@ -280,6 +295,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         patient_id = meta["PatientID"]
         modality = meta["Modality"]
         description = meta["SeriesDescription"]
+
+        stats["patients"].add(patient_id)
         
         # --- ROUTAGE PET / CT ---
         if modality in ["PT", "CT"]:
@@ -287,6 +304,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             
             if modality == "PT":
 
+                stats["pet_traites"] += 1
+             
                 # --- NOUVEAU : AUDIT QUALITÉ DU PET ---
                 suv_check = check_pet_suv_metadata(file_paths)
                 
@@ -316,6 +335,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 convert_files_to_nifti_plastimatch(file_paths, out_raw_pet_path)
                 
             else: # CT
+                stats["ct_traites"] += 1
+             
                 imgs_dir = os.path.join(out_petct_root, patient_id, "imgs")
                 out_path = os.path.join(imgs_dir, f"{patient_id}_TDM.nii.gz")
                 print(f" -> Conversion CT via Plastimatch vers : {out_path}")
@@ -331,6 +352,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                     "desc": description
                 })
             else:
+                stats["irm_secondaires"] += 1
+             
                 print(f"[IRM Secondaire Archivée] {description} (Patient: {patient_id})")
                 clean_desc = "".join(c if c.isalnum() else "_" for c in description)
                 clean_desc = "_".join(filter(None, clean_desc.split("_")))
@@ -353,10 +376,14 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             # Heuristique simple : on regarde si le mot MR ou IRM est dans la description
             # pour deviner à quelle modalité ce masque appartient.
             if "mr" in desc_lower or "irm" in desc_lower:
+                stats["masques_irm"] += 1
+             
                 print(f" [MASQUE IRM ISOLÉ] Modality: {modality} | Desc: {description} (Patient: {patient_id})")
                 # On le range dans la base IRM
                 mask_dir = os.path.join(out_mri_root, patient_id, "dicom_mask_rm", series_uid[-5:])
             else:
+                stats["masques_pet"] += 1
+             
                 print(f" [MASQUE PET/CT ISOLÉ] Modality: {modality} | Desc: {description} (Patient: {patient_id})")
                 # Par défaut (ou si mention de CT/PT), on le range dans la base PET/CT
                 mask_dir = os.path.join(out_petct_root, patient_id, "dicom_mask_pet", series_uid[-5:])
@@ -367,6 +394,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
 
         # --- ARCHIVAGE DES MODALITÉS INCONNUES (The "Others" Data Lake) ---
         else:
+            stats["autres_modalites"] += 1
+         
             print(f" [ARCHIVÉ] Modalité '{modality}' : {description} (Patient: {patient_id})")
             
             # Nettoyage du nom pour le dossier
@@ -397,11 +426,9 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         phases_triees = sorted(phases, key=lambda x: x["time"])
         imgs_dir = os.path.join(out_mri_root, patient_id, "imgs")
 
-        # AUDIT : On veut s'assurer qu'il y a un nombre constant de phases (ex: 4 ou 5)
-        if len(phases_triees) < 2:
-            alerte_phase = f"[ALERTE] Patient {patient_id} : Seulement {len(phases_triees)} phase(s) DCE trouvée(s) !"
-            print(f" -> {alerte_phase}")
-            rapport_erreurs.append(alerte_phase)
+        # Comptage pour la distribution statistique
+        nb_phases = len(phases_triees)
+        mri_phases_distribution[nb_phases] += 1
         
         for index, phase in enumerate(phases_triees):
             file_prefix = f"{patient_id}_{index:04d}"
@@ -413,16 +440,41 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             # --- ON UTILISE dcm2niix ICI ---
             convert_files_to_nifti_dcm2niix(phase["files"], imgs_dir, file_prefix)
 
-    # --- SAUVEGARDE DU RAPPORT DE SYNTHÈSE ---
+    # --- 4. LE SUPER TABLEAU DE BORD (LOGS FINAUX) ---
+    rapport_statistique = [
+        "\n==================================================",
+        "                 BILAN STATISTIQUE                ",
+        "==================================================",
+        f"Patients totaux analysés      : {len(stats['patients'])}",
+        f"Volumes PET traités           : {stats['pet_traites']}",
+        f"Volumes CT traités            : {stats['ct_traites']}",
+        f"Masques PET/CT isolés (SEG/RT): {stats['masques_pet']}",
+        f"Masques IRM isolés (SEG/RT)   : {stats['masques_irm']}",
+        f"Séquences IRM secondaires     : {stats['irm_secondaires']}",
+        f"Séquences exotiques archivées : {stats['autres_modalites']}",
+        "\n--- DISTRIBUTION DES PHASES IRM (T1/DCE) ---"
+    ]
+    
+    if not mri_phases_distribution:
+        rapport_statistique.append("-> Aucune séquence IRM principale (T1/DCE) validée.")
+    else:
+        for nb_phases, nb_patients in sorted(mri_phases_distribution.items()):
+            rapport_statistique.append(f"-> {nb_patients} patient(s) possèdent {nb_phases} phase(s).")
+            if nb_phases != REF_NB_IRMS_PHASES: # Mettons une petite alerte visuelle si ce n'est pas notre standard attendu
+                rapport_statistique[-1] += " [HORS STANDARD]"
+
+    # On affiche dans la console
+    for ligne in rapport_statistique:
+        print(ligne)
+
+    # On sauvegarde tout dans le fichier .txt
     chemin_rapport = os.path.join(os.path.dirname(out_petct_root), "rapport_ingestion.txt")
     with open(chemin_rapport, "w", encoding="utf-8") as f:
         f.write("\n".join(rapport_erreurs))
-        if len(rapport_erreurs) == 4: # Si aucune erreur n'a été ajoutée (juste l'en-tête)
-            f.write("\nAucune anomalie détectée sur les métadonnées TEP !\n")
-            
-    print(f"\n -> Un rapport de synthèse a été généré ici : {chemin_rapport}")
-    print("\n=== INGÉSTION TERMINÉE AVEC SUCCÈS ===")
-            
+        f.write("\n")
+        f.write("\n".join(rapport_statistique))
+        
+    print(f"\n -> Rapport détaillé généré ici : {chemin_rapport}")
     print("\n=== INGÉSTION TERMINÉE AVEC SUCCÈS ===")
 
 if __name__ == "__main__":
