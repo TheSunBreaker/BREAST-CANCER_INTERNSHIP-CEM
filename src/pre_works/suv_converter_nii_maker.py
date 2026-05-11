@@ -157,6 +157,19 @@ def main():
         # --- 4. RECHERCHE DE LA PHYSIQUE (VIA LES DICOMS) ---
         # On fouille dans le dossier TEP pour trouver le poids de la patiente et l'heure d'injection
         ds, _ = _find_pet_header_with_rph(tep_dicom_dir)
+
+        # Le bouclier Anti-Double Conversion !
+        unite_native = str(getattr(ds, "Units", "UNKNOWN")) if ds else "UNKNOWN"
+        
+        if unite_native == "G/ML":
+            print(f"[OK  ] Le PET est DÉJÀ en SUV (Unité: G/ML). Copie directe sans conversion mathématique.")
+            import shutil
+            shutil.copy2(raw_tep_path, out_tep_path)
+            n_converted += 1
+            continue # On passe au patient suivant direct !
+
+        # Si ce n'est pas G/ML (ex: BQML), on continue le code normal...
+        
         params = None
         
         if ds is not None:
