@@ -22,6 +22,7 @@ import shutil
 import pydicom
 import SimpleITK as sitk
 from collections import defaultdict
+import glob
 from tqdm import tqdm # Pour avoir une barre de progression (Le processus pouvant être asez long, c'est toujours bon d'avoir des indices visuels de progression)
 
 import tempfile
