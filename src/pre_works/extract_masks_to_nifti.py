@@ -16,24 +16,38 @@ import argparse
 def merge_sitk_masks(mask_list: list) -> sitk.Image:
     """
     Fusionne une liste de masques SimpleITK en un seul (Union logique OR).
-    Si un pixel est à 1 dans n'importe quel masque, il sera à 1 dans le masque final.
+    Gère automatiquement les différences de taille, d'espacement et d'origine.
     """
     if not mask_list:
         return None
     
-    # On prend le premier masque comme base
-    merged_img = mask_list[0]
-    merged_arr = sitk.GetArrayFromImage(merged_img)
+    # On prend le premier masque comme référence géométrique absolue
+    ref_img = mask_list[0]
+    merged_arr = sitk.GetArrayFromImage(ref_img)
+    
+    # Préparation du "Resampler" (Notre standardiseur spatial)
+    resampler = sitk.ResampleImageFilter()
+    resampler.SetReferenceImage(ref_img)
+    resampler.SetInterpolator(sitk.sitkNearestNeighbor) # IMPORTANT: Pas de lissage sur des masques !
+    resampler.SetDefaultPixelValue(0) # Ce qui déborde de la grille devient du fond (0)
     
     # On additionne les autres
     for i in range(1, len(mask_list)):
-        arr = sitk.GetArrayFromImage(mask_list[i])
-        # Union logique : si c'est > 0 dans arr ou merged_arr, ça devient 1
+        moving_img = mask_list[i]
+        
+        # 1. On force le masque courant à épouser EXACTEMENT la grille de référence
+        # Même si sa taille d'origine était [100, 100, 50] et la ref [512, 512, 100]
+        aligned_img = resampler.Execute(moving_img)
+        
+        # 2. Maintenant, on est mathématiquement certain que les arrays ont la même 'shape'
+        arr = sitk.GetArrayFromImage(aligned_img)
+        
+        # 3. Union logique (Si pixel > 0 dans A ou B -> devient 1)
         merged_arr = np.logical_or(merged_arr, arr).astype(np.uint8)
         
-    # On reconstruit l'image SimpleITK en conservant la géométrie absolue
+    # On reconstruit l'image SimpleITK
     result_img = sitk.GetImageFromArray(merged_arr)
-    result_img.CopyInformation(merged_img)
+    result_img.CopyInformation(ref_img)
     return result_img
 
 def convert_dicom_seg_to_nifti(dicom_paths: list) -> sitk.Image:
