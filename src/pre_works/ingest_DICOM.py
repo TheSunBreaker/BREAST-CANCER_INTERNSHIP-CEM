@@ -238,6 +238,14 @@ def get_series_metadata(file_paths: list) -> dict:
         return {}
 
 def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str, out_others_root: str):
+
+    # --- INITIALISATION DU RAPPORT DE SYNTHÈSE ---
+    rapport_erreurs = [
+        "==================================================",
+        "      RAPPORT DE SYNTHÈSE DE L'INGESTION DICOM    ",
+        "==================================================\n",
+        "--- ALERTES TEP (POUR LE CALCUL SUV FUTUR) ---"
+    ]
     
     # 1. On scanne tout et on regroupe par série, peu importe l'organisation des dossiers
     series_groups = scan_and_group_dicoms(raw_data_root)
@@ -265,12 +273,16 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 suv_check = check_pet_suv_metadata(file_paths)
                 
                 if suv_check["valid"]:
-                    print(f" -> Métadonnées SUV complètes. (Unité native : {suv_check['units']})")
+                    print(f" -> Métadonnées SUV complètes. (Unité : {suv_check['units']})")
                 else:
-                    print(f" -> [ATTENTION] Métadonnées SUV manquantes : {suv_check['missing']} (Unité native : {suv_check['units']})")
+                    alerte = f"[MANQUANT] Patient {patient_id} : {suv_check['missing']} (Unité: {suv_check['units']})"
+                    print(f" -> {alerte}")
+                    rapport_erreurs.append(alerte)
 
-                if suv_check['units'] != "BQML":
-                    print(f" -> [WARNING] L'unité du PET n'est pas BQML ! ({suv_check['units']}). Prudence pour le calcul SUV.")
+                if suv_check['units'] not in ["BQML", "CNTS"]:
+                    alerte_unite = f"[UNITÉ ANORMALE] Patient {patient_id} : L'unité est '{suv_check['units']}'. Vérifiez si ce n'est pas déjà un SUV !"
+                    print(f" -> {alerte_unite}")
+                    rapport_erreurs.append(alerte_unite)
                  
                 # 1. Copie pour le calcul SUV
                 tep_dicom_dir = os.path.join(out_petct_root, patient_id, "TEP", series_uid)
@@ -366,6 +378,16 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             
             # --- ON UTILISE dcm2niix ICI ---
             convert_files_to_nifti_dcm2niix(phase["files"], imgs_dir, file_prefix)
+
+    # --- SAUVEGARDE DU RAPPORT DE SYNTHÈSE ---
+    chemin_rapport = os.path.join(os.path.dirname(out_petct_root), "rapport_ingestion.txt")
+    with open(chemin_rapport, "w", encoding="utf-8") as f:
+        f.write("\n".join(rapport_erreurs))
+        if len(rapport_erreurs) == 4: # Si aucune erreur n'a été ajoutée (juste l'en-tête)
+            f.write("\nAucune anomalie détectée sur les métadonnées TEP !\n")
+            
+    print(f"\n -> Un rapport de synthèse a été généré ici : {chemin_rapport}")
+    print("\n=== INGÉSTION TERMINÉE AVEC SUCCÈS ===")
             
     print("\n=== INGÉSTION TERMINÉE AVEC SUCCÈS ===")
 
