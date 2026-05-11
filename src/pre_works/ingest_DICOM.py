@@ -131,6 +131,23 @@ def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bo
             print(f"   [ERREUR FATALE] L'exécutable Plastimatch est introuvable au chemin : {PLASTIMATCH_EXE}")
             return False
 
+def check_mri_metadata(file_paths: list) -> dict:
+    """
+    Vérifie les paramètres d'acquisition IRM critiques pour éviter 
+    les incohérences dans les futurs tenseurs.
+    """
+    if not file_paths:
+        return {"TR": "UNKNOWN", "TE": "UNKNOWN"}
+    
+    try:
+        ds = pydicom.dcmread(file_paths[0], stop_before_pixels=True, force=True)
+        return {
+            "TR": str(getattr(ds, "RepetitionTime", "MISSING")),
+            "TE": str(getattr(ds, "EchoTime", "MISSING"))
+        }
+    except Exception:
+        return {"TR": "ERROR", "TE": "ERROR"}
+
 def check_pet_suv_metadata(file_paths: list) -> dict:
     """
     Vérifie si les métadonnées nécessaires au calcul SUV sont présentes.
@@ -367,15 +384,31 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 shutil.copy2(f, other_dicom_dir)
 
     # --- 3. TRAITEMENT ET TRI TEMPOREL DES PHASES IRM ---
+
+    # --- INITIALISATION DE L'AUDIT IRM ---
+    rapport_erreurs.extend([
+        "\n==================================================",
+        "--- ALERTES IRM (COHÉRENCE DES PHASES DCE) ---"
+    ])
+ 
     print("\n--- 3. CONVERSION ET TRI CHRONOLOGIQUE DES PHASES IRM ---")
     for patient_id, phases in mri_phases_by_patient.items():
         # Tri chronologique basé sur le SeriesTime du DICOM
         phases_triees = sorted(phases, key=lambda x: x["time"])
         imgs_dir = os.path.join(out_mri_root, patient_id, "imgs")
+
+        # AUDIT : On veut s'assurer qu'il y a un nombre constant de phases (ex: 4 ou 5)
+        if len(phases_triees) < 2:
+            alerte_phase = f"[ALERTE] Patient {patient_id} : Seulement {len(phases_triees)} phase(s) DCE trouvée(s) !"
+            print(f" -> {alerte_phase}")
+            rapport_erreurs.append(alerte_phase)
         
         for index, phase in enumerate(phases_triees):
             file_prefix = f"{patient_id}_{index:04d}"
-            print(f" -> IRM Phase {index} ({phase['desc']}) via dcm2niix vers : {imgs_dir}")
+         
+            # Audit des paramètres TR/TE
+            mri_audit = check_mri_metadata(phase["files"])
+            print(f" -> IRM Phase {index} ({phase['desc']} | TR:{mri_audit['TR']} TE:{mri_audit['TE']}) via dcm2niix")
             
             # --- ON UTILISE dcm2niix ICI ---
             convert_files_to_nifti_dcm2niix(phase["files"], imgs_dir, file_prefix)
