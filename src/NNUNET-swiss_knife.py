@@ -122,14 +122,16 @@ def do_preprocess(dataset_id: str):
     cmd = ["nnUNetv2_plan_and_preprocess", "-d", dataset_id, "--verify_dataset_integrity"]
     run_command(cmd)
 
-def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_weights: str):
-    print(f"--- DÉMARRAGE ENTRAÎNEMENT (Dataset {dataset_id} | Config: {config} | Fold: {fold}) ---")
+def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_weights: str, trainer: str):
+    print(f"--- DÉMARRAGE ENTRAÎNEMENT (Dataset {dataset_id} | Config: {config} | Fold: {fold} | Trainer: {trainer}) ---")
 
     folds = ["0", "1", "2", "3", "4"] if fold == "all" else [fold]
     print(f"[INFO] Folds qui vont être entraînés séquentiellement : {folds}")
 
     for f in folds:
-        cmd = ["nnUNetv2_train", dataset_id, config, f]
+
+        # NOUVEAU : On ajoute le flag -tr suivi du nom de la classe du Trainer
+        cmd = ["nnUNetv2_train", dataset_id, config, f, "-tr", trainer]
         
         # --- NOUVEAU : REPRISE SUR SAUVEGARDE ---
         if resume:
@@ -145,7 +147,9 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
             cmd.extend(["-pretrained_weights", pretrained_weights])
 
         # --- DÉMARRAGE DU MONITORING EN TÂCHE DE FOND ---
-        run_output_dir = NNUNET_RESULTS / dataset_id / f"nnUNetTrainer__{config}" / f"fold_{f}"
+        # Attention : Le nom du dossier de sortie change si on utilise un Custom Trainer !
+        # Format nnU-Net : nnUNetTrainer__3d_fullres ou nnUNetTrainer_500epochs__3d_fullres
+        run_output_dir = NNUNET_RESULTS / dataset_id / f"{trainer}__{config}" / f"fold_{f}"
         run_output_dir.mkdir(parents=True, exist_ok=True)
         
         monitor_thread = threading.Thread(
@@ -162,8 +166,9 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
         monitor_thread.do_run = False
         monitor_thread.join()
 
-def do_predict(dataset_id: str, config: str, fold: str, input_folder: str, output_folder: str):
-    print(f"--- DÉMARRAGE INFÉRENCE (Dataset {dataset_id} | Config: {config} | Fold: {fold}) ---")
+def do_predict(dataset_id: str, config: str, fold: str, input_folder: str, output_folder: str, trainer: str):
+    print(f"--- DÉMARRAGE INFÉRENCE (Dataset {dataset_id} | Config: {config} | Fold: {fold} | Trainer: {trainer}) ---")
+    
     in_path = Path(input_folder)
     out_path = Path(output_folder)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -182,7 +187,10 @@ def do_predict(dataset_id: str, config: str, fold: str, input_folder: str, outpu
         "-d", dataset_id,
         "-c", config,
         "-f"
-    ] + folds + ["-save_probabilities"]
+    ] + folds + [
+        "-tr", trainer,  # NOUVEAU : Inférence avec le même Trainer !
+        "-save_probabilities"
+    ]
 
     run_command(cmd)
 
@@ -223,6 +231,10 @@ def main():
     
     parser.add_argument("-f", "--fold", type=str, default="0", 
                         help="Quel fold utiliser (0-4) ou 'all' pour tous les folds.")
+
+    # --- NOUVEL ARGUMENT : LE TRAINER ---
+    parser.add_argument("-tr", "--trainer", type=str, default="nnUNetTrainer",
+                        help="Nom de la classe du Trainer. Le changer pour utiliser, par exemple, un modèle avec moins d'époques (ex: nnUNetTrainer_250epochs).")
     
     # --- NOUVEAUX ARGUMENTS POUR L'ENTRAÎNEMENT ---
     parser.add_argument("--resume", action="store_true",
