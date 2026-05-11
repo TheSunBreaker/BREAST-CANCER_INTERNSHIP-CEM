@@ -90,7 +90,13 @@ def main():
         description="Convertit un NIfTI TEP brut (Plastimatch) en TEP SUVbw en utilisant les en-têtes DICOM."
     )
     # L'input_root correspondra à notre "PROJET_PETCT_RACINE"
-    parser.add_argument("input_root", type=Path, help="Dossier racine contenant les subject_xxx")
+    parser.add_argument(
+    "input_root",
+    type=Path,
+    nargs="?",
+    default="Base_PETCT",
+    help="Dossier racine contenant les subject_xxx"
+    )
     parser.add_argument("--metadata-csv", type=Path, default=None,
                         help="Fichier CSV optionnel de secours pour les paramètres cliniques manquants.")
     parser.add_argument("--overwrite", action="store_true", help="Écrase les fichiers SUV existants.")
