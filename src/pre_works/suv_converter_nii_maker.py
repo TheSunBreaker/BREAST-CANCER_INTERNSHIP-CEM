@@ -5,7 +5,7 @@ import csv
 import pydicom
 import SimpleITK as sitk
 
-from src.suv_conversion import (  
+from utils.suv_conversion import (  
     extract_patient_parameters,   # Extrait dose/poids/demi-vie depuis l'en-tête DICOM
     compute_suv_factors,          # Calcule le facteur mathématique SUVbw
     write_normalized_image        # Multiplie l'image par le facteur et sauvegarde
