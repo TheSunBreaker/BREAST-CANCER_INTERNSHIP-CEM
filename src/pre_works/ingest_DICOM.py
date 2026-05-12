@@ -71,26 +71,72 @@ def convert_files_to_nifti_dcm2niix(file_paths: list, output_dir: str, file_pref
             
             subprocess.run(commande, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             
-            # dcm2niix a parfois la bonne idée de générer plusieurs fichiers pour une même séquence
-            # (par exemple : file_prefix_e1.nii.gz, file_prefix_e2.nii.gz pour les échos multiples)
             generated_files = glob.glob(os.path.join(nifti_dir, "*.nii.gz"))
             if not generated_files:
-                return False
+                return 0 # 0 volumes générés
                 
             os.makedirs(output_dir, exist_ok=True)
+            total_phases_generees = 0
+            
             for gf in generated_files:
                 dest = os.path.join(output_dir, os.path.basename(gf))
                 shutil.move(gf, dest)
                 
-            return True
+                # On split si nécessaire, et on récupère le nombre de volumes
+                split_prefix = os.path.basename(dest).replace(".nii.gz", "")
+                nb_vols = split_4d_nifti_to_3d(dest, output_dir, split_prefix)
+                total_phases_generees += nb_vols
+                
+            return total_phases_generees
             
         except subprocess.CalledProcessError as e:
             print(f"   [ERREUR] dcm2niix a échoué : {e}")
-            return False
+            return 0
+               
         except FileNotFoundError:
             print(f"   [ERREUR FATALE] dcm2niix est introuvable au chemin : {DCM2NIIX_EXE}")
             return False
+
+def split_4d_nifti_to_3d(nifti_path: str, output_dir: str, file_prefix: str) -> int:
+    """
+    Vérifie si un NIfTI est en vrai 4D. 
+    Si oui, le découpe en plusieurs volumes 3D.
+    Sauvegarde l'original et retourne le nombre de volumes 3D finaux.
+    """
+    try:
+        reader = sitk.ImageFileReader()
+        reader.SetFileName(nifti_path)
+        reader.ReadImageInformation()
+        size = reader.GetSize()
+        
+        # FIX 2 : Ne pas splitter les pseudo-4D (Z, 1)
+        if len(size) < 4 or size[3] <= 1:
+            return 1 # C'est un volume unique
             
+        nb_volumes = size[3]
+        print(f"    [ATTENTION] Fichier 4D détecté ({size}). Découpage en {nb_volumes} volumes 3D...")
+        
+        img_4d = sitk.ReadImage(nifti_path)
+        
+        for t in range(nb_volumes):
+            extractor = sitk.ExtractImageFilter()
+            extractor.SetSize([size[0], size[1], size[2], 0])
+            extractor.SetIndex([0, 0, 0, t])
+            img_3d = extractor.Execute(img_4d)
+            
+            # Suffixe propre pour le split
+            out_path = os.path.join(output_dir, f"{file_prefix}_split{t:04d}.nii.gz")
+            sitk.WriteImage(img_3d, out_path)
+            
+        # FIX 3 : On garde le 4D original, mais on le renomme pour qu'il ne pollue pas nnU-Net
+        archive_path = nifti_path.replace(".nii.gz", "_4D_original.nii.gz")
+        shutil.move(nifti_path, archive_path)
+        
+        return nb_volumes
+        
+    except Exception as e:
+        print(f"    [ERREUR] Impossible d'analyser/découper le NIfTI 4D {nifti_path}: {e}")
+        return 1 # Fallback de sécurité
 
 def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bool:
     """
@@ -330,7 +376,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 
                 # 2. Génération du PET Brut (en Becquerels) via Plastimatch
                 imgs_dir = os.path.join(out_petct_root, patient_id, "imgs")
-                out_raw_pet_path = os.path.join(imgs_dir, f"{patient_id}_TEP_RAW.nii.gz")
+                # On ajoute series_uid[-5:] pour rendre le fichier unique !
+                out_raw_pet_path = os.path.join(imgs_dir, f"{patient_id}_TEP_{series_uid[-5:]}_RAW.nii.gz")
                 print(f" -> Conversion PET Brut via Plastimatch vers : {out_raw_pet_path}")
                 convert_files_to_nifti_plastimatch(file_paths, out_raw_pet_path)
                 
@@ -338,7 +385,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 stats["ct_traites"] += 1
              
                 imgs_dir = os.path.join(out_petct_root, patient_id, "imgs")
-                out_path = os.path.join(imgs_dir, f"{patient_id}_TDM.nii.gz")
+                # CORRECTION
+                out_path = os.path.join(imgs_dir, f"{patient_id}_TDM_{series_uid[-5:]}.nii.gz")
                 print(f" -> Conversion CT via Plastimatch vers : {out_path}")
                 convert_files_to_nifti_plastimatch(file_paths, out_path)
                 
@@ -426,9 +474,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         phases_triees = sorted(phases, key=lambda x: x["time"])
         imgs_dir = os.path.join(out_mri_root, patient_id, "imgs")
 
-        # Comptage pour la distribution statistique
-        nb_phases = len(phases_triees)
-        mri_phases_distribution[nb_phases] += 1
+        # FIX 1 : On initialise le vrai compteur de phases pour ce patient
+        vrai_nb_phases_patient = 0
         
         for index, phase in enumerate(phases_triees):
             file_prefix = f"{patient_id}_{index:04d}"
@@ -437,9 +484,14 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             mri_audit = check_mri_metadata(phase["files"])
             print(f" -> IRM Phase {index} ({phase['desc']} | TR:{mri_audit['TR']} TE:{mri_audit['TE']}) via dcm2niix")
             
-            # --- ON UTILISE dcm2niix ICI ---
-            convert_files_to_nifti_dcm2niix(phase["files"], imgs_dir, file_prefix)
-
+            # On récupère le nombre de phases réellement générées sur le disque
+            nb_gen = convert_files_to_nifti_dcm2niix(phase["files"], imgs_dir, file_prefix)
+            vrai_nb_phases_patient += nb_gen
+            
+        # On met à jour la distribution statistique avec la réalité du disque
+        if vrai_nb_phases_patient > 0:
+            mri_phases_distribution[vrai_nb_phases_patient] += 1
+         
     # --- 4. LE SUPER TABLEAU DE BORD (LOGS FINAUX) ---
     rapport_statistique = [
         "\n==================================================",
