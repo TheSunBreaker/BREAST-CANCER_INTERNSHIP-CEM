@@ -487,9 +487,16 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
 
                     # --- RESTAURATION : Audit des paramètres TR/TE ---
                     mri_audit = check_mri_metadata(seq["files"])
-                    print(f"    -> IRM Phase {phase_index} ({seq['desc']} | TR:{mri_audit['TR']} TE:{mri_audit['TE']}) via dcm2niix")
-                    
+                    print(f"    -> IRM Série {phase_index} ({seq['desc']} | TR:{mri_audit['TR']} TE:{mri_audit['TE']}) via dcm2niix")
+                  
                     nb_gen = convert_files_to_nifti_dcm2niix(seq["files"], imgs_dir, file_prefix, patient_mri_root)
+
+                    # --- AJOUT: Notification du découpage ---
+                    if nb_gen > 1:
+                        print(f"       [SPLIT 4D] -> Série découpée en {nb_gen} phases 3D sur le disque.")
+                    elif nb_gen == 1:
+                        print(f"       [VOLUME 3D] -> 1 phase générée.")
+                      
                     if nb_gen > 0:
                         phases_dans_visite += nb_gen
                         generate_temporal_log(seq["files"], imgs_dir)
@@ -498,73 +505,64 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 mri_phases_distribution[phases_dans_visite] += 1
 
         # --------------------------------------------------------------------
-        # TRAITEMENT PET (Regroupement par visite)
+        # TRAITEMENT UNIFIÉ PET ET CT (Synchronisation des dossiers)
         # --------------------------------------------------------------------
-        if "PT" in modalities:
-            patient_pet_root = os.path.join(out_petct_root, patient_id)
+        if "PT" in modalities or "CT" in modalities:
+            patient_petct_root = os.path.join(out_petct_root, patient_id)
             
-            pt_studies = defaultdict(list)
-            for seq in modalities["PT"]: pt_studies[seq["study_uid"]].append(seq)
-            sorted_pt_studies = sorted(pt_studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
+            # 1. On groupe les PET et les CT dans les mêmes "Études" (Visites)
+            petct_studies = defaultdict(list)
+            for seq in modalities.get("PT", []): petct_studies[seq["study_uid"]].append(seq)
+            for seq in modalities.get("CT", []): petct_studies[seq["study_uid"]].append(seq)
 
-            for study_index, study_seqs in enumerate(sorted_pt_studies):
+            # 2. On trie les visites par ordre chronologique
+            sorted_petct_studies = sorted(petct_studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
+
+            for study_index, study_seqs in enumerate(sorted_petct_studies):
+                # L'heure du tout premier scan (souvent le CT) devient le nom officiel du dossier
                 study_date_str = min(s["dt"] for s in study_seqs).strftime("%Y%m%d_%H%M")
+                
                 tep_folder_name = "TEP" if study_index == 0 else f"TEP_{study_date_str}"
                 imgs_folder_name = "imgs" if study_index == 0 else f"imgs_{study_date_str}"
+                imgs_dir = os.path.join(patient_petct_root, imgs_folder_name)
                 
+                # 3. On trie les séquences à l'intérieur de la visite
                 seq_sorted = sorted(study_seqs, key=lambda x: x["dt"])
                 
                 for seq in seq_sorted:
+                    # Mémorisation pour les masques (Qu'il soit dessiné sur le PET ou le CT, il ira au même endroit)
                     uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_pet" if study_index == 0 else f"dicom_mask_pet_{study_date_str}"
-                    tep_dicom_dir = os.path.join(patient_pet_root, tep_folder_name, seq["uid"][-5:])
-                    imgs_dir = os.path.join(patient_pet_root, imgs_folder_name)
-                    os.makedirs(tep_dicom_dir, exist_ok=True)
                     
-                    stats["pet_traites"] += 1
-                    
-                    # --- RESTAURATION : AUDIT QUALITÉ DU PET ---
-                    suv_check = check_pet_suv_metadata(seq["files"])
-                    
-                    if suv_check["valid"]:
-                        print(f"    -> Métadonnées SUV complètes. (Unité : {suv_check['units']})")
-                    else:
-                        alerte = f"[MANQUANT] Patient {patient_id} Visite {study_index+1} : {suv_check['missing']} (Unité: {suv_check['units']})"
-                        print(f"    -> {alerte}")
-                        rapport_erreurs.append(alerte)
-
-                    # Le bouclier anti-double conversion SUV
-                    if suv_check['units'] not in ["BQML", "CNTS"]:
-                        alerte_unite = f"[UNITÉ ANORMALE] Patient {patient_id} Visite {study_index+1} : L'unité est '{suv_check['units']}'. Vérifiez si ce n'est pas déjà un SUV !"
-                        print(f"    -> {alerte_unite}")
-                        rapport_erreurs.append(alerte_unite)
-                    
-                    for f in seq["files"]: shutil.copy2(f, tep_dicom_dir)
-                    
-                    time_marker = "Baseline" if study_index == 0 else study_date_str
-                    out_raw_pet_path = os.path.join(imgs_dir, f"{patient_id}_TEP_{time_marker}_{seq['uid'][-5:]}_RAW.nii.gz")
-                    print(f" -> [PET VISITE {study_index+1}] NIfTI généré : {os.path.basename(out_raw_pet_path)}")
-                    
-                    convert_files_to_nifti_plastimatch(seq["files"], out_raw_pet_path)
-
-        # --------------------------------------------------------------------
-        # TRAITEMENT CT (Regroupement par visite)
-        # --------------------------------------------------------------------
-        if "CT" in modalities:
-            ct_studies = defaultdict(list)
-            for seq in modalities["CT"]: ct_studies[seq["study_uid"]].append(seq)
-            sorted_ct_studies = sorted(ct_studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
-
-            for study_index, study_seqs in enumerate(sorted_ct_studies):
-                study_date_str = min(s["dt"] for s in study_seqs).strftime("%Y%m%d_%H%M")
-                imgs_folder_name = "imgs" if study_index == 0 else f"imgs_{study_date_str}"
-                
-                for seq in study_seqs:
-                    uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_pet" if study_index == 0 else f"dicom_mask_pet_{study_date_str}"
-                    imgs_dir = os.path.join(out_petct_root, patient_id, imgs_folder_name)
-                    stats["ct_traites"] += 1
-                    out_path = os.path.join(imgs_dir, f"{patient_id}_TDM_{seq['uid'][-5:]}.nii.gz")
-                    convert_files_to_nifti_plastimatch(seq["files"], out_path)
-
+                    if seq["modality"] == "PT":
+                        tep_dicom_dir = os.path.join(patient_petct_root, tep_folder_name, seq["uid"][-5:])
+                        os.makedirs(tep_dicom_dir, exist_ok=True)
+                        stats["pet_traites"] += 1
+                        
+                        # --- AUDIT SUV ---
+                        suv_check = check_pet_suv_metadata(seq["files"])
+                        if suv_check["valid"]:
+                            print(f"    -> Métadonnées SUV complètes. (Unité : {suv_check['units']})")
+                        else:
+                            alerte = f"[MANQUANT] Patient {patient_id} Visite {study_index+1} : {suv_check['missing']} (Unité: {suv_check['units']})"
+                            print(f"    -> {alerte}")
+                            rapport_erreurs.append(alerte)
+                        if suv_check['units'] not in ["BQML", "CNTS"]:
+                            alerte_unite = f"[UNITÉ ANORMALE] Patient {patient_id} Visite {study_index+1} : L'unité est '{suv_check['units']}'."
+                            rapport_erreurs.append(alerte_unite)
+                        
+                        for f in seq["files"]: shutil.copy2(f, tep_dicom_dir)
+                        
+                        time_marker = "Baseline" if study_index == 0 else study_date_str
+                        out_raw_pet_path = os.path.join(imgs_dir, f"{patient_id}_TEP_{time_marker}_{seq['uid'][-5:]}_RAW.nii.gz")
+                        print(f" -> [PET VISITE {study_index+1}] NIfTI généré : {os.path.basename(out_raw_pet_path)}")
+                        convert_files_to_nifti_plastimatch(seq["files"], out_raw_pet_path)
+                        
+                    elif seq["modality"] == "CT":
+                        stats["ct_traites"] += 1
+                        out_path = os.path.join(imgs_dir, f"{patient_id}_TDM_{seq['uid'][-5:]}.nii.gz")
+                        print(f" -> [CT VISITE {study_index+1}] NIfTI généré : {os.path.basename(out_path)}")
+                        convert_files_to_nifti_plastimatch(seq["files"], out_path)
+                      
         # --------------------------------------------------------------------
         # TRAITEMENT MASQUES (AVEC MATCHING STRICT)
         # --------------------------------------------------------------------
