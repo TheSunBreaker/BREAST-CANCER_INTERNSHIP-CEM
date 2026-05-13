@@ -484,6 +484,10 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                     
                     # On numérote la phase séquentiellement dans la visite
                     file_prefix = f"{patient_id}_{phase_index:04d}"
+
+                    # --- RESTAURATION : Audit des paramètres TR/TE ---
+                    mri_audit = check_mri_metadata(seq["files"])
+                    print(f"    -> IRM Phase {phase_index} ({seq['desc']} | TR:{mri_audit['TR']} TE:{mri_audit['TE']}) via dcm2niix")
                     
                     nb_gen = convert_files_to_nifti_dcm2niix(seq["files"], imgs_dir, file_prefix, patient_mri_root)
                     if nb_gen > 0:
@@ -518,9 +522,21 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                     
                     stats["pet_traites"] += 1
                     
+                    # --- RESTAURATION : AUDIT QUALITÉ DU PET ---
                     suv_check = check_pet_suv_metadata(seq["files"])
-                    if not suv_check["valid"]:
-                        rapport_erreurs.append(f"[MANQUANT] Patient {patient_id} : {suv_check['missing']}")
+                    
+                    if suv_check["valid"]:
+                        print(f"    -> Métadonnées SUV complètes. (Unité : {suv_check['units']})")
+                    else:
+                        alerte = f"[MANQUANT] Patient {patient_id} Visite {study_index+1} : {suv_check['missing']} (Unité: {suv_check['units']})"
+                        print(f"    -> {alerte}")
+                        rapport_erreurs.append(alerte)
+
+                    # Le bouclier anti-double conversion SUV
+                    if suv_check['units'] not in ["BQML", "CNTS"]:
+                        alerte_unite = f"[UNITÉ ANORMALE] Patient {patient_id} Visite {study_index+1} : L'unité est '{suv_check['units']}'. Vérifiez si ce n'est pas déjà un SUV !"
+                        print(f"    -> {alerte_unite}")
+                        rapport_erreurs.append(alerte_unite)
                     
                     for f in seq["files"]: shutil.copy2(f, tep_dicom_dir)
                     
