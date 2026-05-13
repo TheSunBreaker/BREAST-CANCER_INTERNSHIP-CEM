@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 r"""
-Script d'ingestion DICOM robuste - V4 (Longitudinale + Matching Strict + Logs Rétablis).
-Ce script agit comme le sas de sécurité entre les données brutes "fourre-tout" de l'hôpital
-et notre environnement d'entraînement structuré (nnU-Net).
+Script d'ingestion DICOM robuste - V6 (L'Ingesteur Clinique Définitif).
 
 =============================================================================
-PHILOSOPHIE DE L'ARCHITECTURE :
-1. Protection de la donnée : On ne modifie JAMAIS les DICOMs originaux.
-2. Suivi Longitudinal : Le premier examen chronologique devient la Baseline 
-   (dossier 'imgs'). Les examens ultérieurs sont des Follow-ups ('imgs_YYYYMMDD_HHMM').
-3. Sécurité des annotations : Les masques SEG sont appariés de force à leur image 
-   via le ReferencedSeriesSequence. Si introuvable, ils sont isolés (Orphelins).
-4. Traçabilité (Audit) : Un rapport textuel complet est généré à la racine, et 
-   un log temporel détaillé est placé dans chaque dossier de DCE IRM.
+NOUVEAUTÉS V6 (Le Filtre Dynamique Multicentrique) :
+- Anti-Reconstructions : Rejette automatiquement les MIP, Soustractions (SUB), 
+  Scouts, et reformats (SAG/COR) grâce au tag DICOM 'ImageType' et aux mots-clés.
+- Tri Temporel Absolu : Utilise 'TemporalPositionIdentifier' en priorité absolue 
+  pour ordonner les phases DCE, avec fallback sur l'heure d'acquisition, 
+  puis sur le SeriesNumber.
+- Architecture : [Patient] -> [Visite (StudyUID)] -> [Phases DCE Pures (TempPos)]
 =============================================================================
 
 ATTENTION, IL EST NECESSAIRE, POUR UTILISER CE SCRIPT, D'INSTALLER PLASTIMATCH SUR SA MACHINE VIA LE LIEN https://sourceforge.net/projects/plastimatch/postdownload POUR WINDOWS, PUIS
@@ -98,23 +95,46 @@ def generate_temporal_log(dicom_paths: list, output_dir: str):
     sorted_times = sorted(list(unique_times))
     log_path = os.path.join(output_dir, "DCE_temporal_log.txt")
     
-    with open(log_path, "w", encoding="utf-8") as f:
-        f.write("=== LOG TEMPOREL DCE ===\n")
-        f.write(f"Nombre de phases temporelles distinctes detectees : {len(sorted_times)}\n\n")
+    # On ajoute "a" (append) au lieu de "w" pour accumuler les logs si plusieurs séries 3D
+    # forment la séquence DCE globale de cette visite.
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write("\n=== BLOC TEMPOREL (Série dynamique) ===\n")
+        f.write(f"Timestamps distincts detectes : {len(sorted_times)}\n")
         
         if len(sorted_times) < 2:
-            f.write("[ALERTE] Pas assez de timestamps distincts pour calculer des intervalles.\n")
+            f.write(" -> Volume statique ou metadata temps ecrasee.\n")
             return
 
-        # On simule une date pour utiliser la puissance du module datetime en calcul de deltas
         dt_times = [datetime.strptime(t[:6], "%H%M%S") for t in sorted_times]
-        total_delta = (dt_times[-1] - dt_times[0]).total_seconds()
-        
-        f.write(f"Temps total entre Phase 1 et Phase Finale : {total_delta} secondes\n\n")
-        f.write("Intervalles entre les phases :\n")
+        f.write(f"Temps total : {(dt_times[-1] - dt_times[0]).total_seconds()} s\n")
         for i in range(1, len(dt_times)):
-            delta = (dt_times[i] - dt_times[i-1]).total_seconds()
-            f.write(f" - Phase {i-1} -> Phase {i} : {delta} secondes\n")
+            f.write(f" - Ecart {i-1}->{i} : {(dt_times[i] - dt_times[i-1]).total_seconds()} s\n")
+
+# --- NOUVEAU : FILTRES CLINIQUES ANTI-RECONSTRUCTIONS ---
+# Les mots qui trahissent une image reconstruite ou un mauvais plan d'acquisition
+EXCLUDE_TERMS = [
+    "SUB", "SOUSTRACTION", "MIP", "ADC", "MAP", "TRACE", 
+    "SCOUT", "LOC", "LOCALIZER", "REFORMAT", "MPR", 
+    "COR", "SAG", "CORONAL", "SAGITTAL"
+]
+
+def is_valid_dce_phase(desc: str, image_type: list) -> bool:
+    """
+    Filtre impitoyable pour ne garder que les phases dynamiques brutes.
+    """
+    desc_upper = desc.upper()
+    
+    # 1. Rejet par mot-clé dans la description
+    if any(x in desc_upper for x in EXCLUDE_TERMS):
+        return False
+        
+    # 2. Rejet par le type d'image DICOM (Très puissant)
+    # L'image doit être ORIGINAL et PRIMARY. Si elle est DERIVED (ex: MIP) ou SECONDARY, on jette.
+    img_type_str = [str(x).upper() for x in image_type] if image_type else []
+    if "DERIVED" in img_type_str or "SECONDARY" in img_type_str:
+        return False
+        
+    return True
 
 def get_referenced_series_uid(file_paths: list) -> str:
     """
@@ -305,7 +325,12 @@ def get_series_metadata(file_paths: list) -> dict:
         return {
             "PatientID": str(getattr(ds, "PatientID", "UNKNOWN")),
             "Modality": str(getattr(ds, "Modality", "UNKNOWN")),
-            "SeriesDescription": str(getattr(ds, "SeriesDescription", "UNKNOWN")).upper()
+            "SeriesDescription": str(getattr(ds, "SeriesDescription", "UNKNOWN")).upper(),
+            "StudyUID": str(getattr(ds, "StudyInstanceUID", "UNKNOWN_STUDY")),
+            # NOUVEAU V6 : Tags cruciaux pour le tri et le filtrage DCE
+            "ImageType": getattr(ds, "ImageType", []),
+            "TempPos": getattr(ds, "TemporalPositionIdentifier", None),
+            "SeriesNumber": getattr(ds, "SeriesNumber", 9999)
         }
     except: return {}
 
@@ -318,9 +343,15 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
 
     # --- INITIALISATION DE L'AUDIT ---
     stats = {
-        "patients": set(), "pet_traites": 0, "ct_traites": 0,
-        "masques_pet": 0, "masques_irm": 0, "masques_orphelins": 0,
-        "autres_modalites": 0, "irm_secondaires": 0
+        "patients": set(),
+        "pet_traites": 0,
+        "ct_traites": 0,
+        "masques_pet": 0,
+        "masques_irm": 0,
+        "masques_orphelins": 0,
+        "autres_modalites": 0,
+        "irm_secondaires": 0,
+        "irm_rejetees": 0
     }
     mri_phases_distribution = defaultdict(int)
     
@@ -346,17 +377,31 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         # On calcule le timestamp absolu qui va nous servir à distinguer Baseline et Follow-ups
         dt = get_series_datetime(file_paths)
         
-        series_info = {"uid": series_uid, "files": file_paths, "desc": meta["SeriesDescription"], "dt": dt}
-
+        # Ajout du study_uid dans les infos pour grouper par visite plus tard
+        series_info = {
+            "uid": series_uid, 
+            "files": file_paths, 
+            "desc": meta["SeriesDescription"], 
+            "dt": dt,
+            "study_uid": meta["StudyUID"],
+            # NOUVEAU V6 : on passe ces infos pour le futur tri
+            "temp_pos": meta["TempPos"],
+            "series_num": meta["SeriesNumber"]
+        }
         # On ventile dans des "paniers" selon la modalité
         if modality == "PT": 
             patient_data[patient_id]["PT"].append(series_info)
         elif modality == "CT": 
             patient_data[patient_id]["CT"].append(series_info)
         elif modality == "MR":
-            # On ne garde que les séquences dynamiques ou T1 natives pour le modèle
             if "T1" in meta["SeriesDescription"] or "DCE" in meta["SeriesDescription"]:
-                patient_data[patient_id]["MR"].append(series_info)
+                # Le Filtre Absolu intervient ici
+                if is_valid_dce_phase(meta["SeriesDescription"], meta["ImageType"]):
+                    patient_data[patient_id]["MR"].append(series_info)
+                else:
+                    print(f"   [FILTRE] Rejet de l'IRM dérivée/reconstruite : {meta['SeriesDescription']}")
+                    stats["irm_rejetees"] += 1
+                    patient_data[patient_id]["MR_AUTRES"].append(series_info)
             else: 
                 patient_data[patient_id]["MR_AUTRES"].append(series_info)
         elif modality in ["RTSTRUCT", "SEG"]:
@@ -378,89 +423,118 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         print(f"\n[PATIENT] Traitement de {patient_id}...")
         
         # --------------------------------------------------------------------
-        # TRAITEMENT IRM PRINCIPAL (DCE)
+        # TRAITEMENT IRM PRINCIPAL (Regroupement par Étude/Visite)
         # --------------------------------------------------------------------
         if "MR" in modalities:
-            # Tri par date absolue croissante
-            mr_sorted = sorted(modalities["MR"], key=lambda x: x["dt"])
             patient_mri_root = os.path.join(out_mri_root, patient_id)
             
-            for index, seq in enumerate(mr_sorted):
-                date_str = seq["dt"].strftime("%Y%m%d_%H%M")
+            # 1. Grouper les séries par StudyUID (L'examen du jour)
+            studies = defaultdict(list)
+            for seq in modalities["MR"]:
+                studies[seq["study_uid"]].append(seq)
                 
-                # Règle d'or : index 0 = Baseline (imgs). Index > 0 = Suivi (imgs_date)
-                target_folder_name = "imgs" if index == 0 else f"imgs_{date_str}"
+            # 2. Trier les Études par l'heure de leur première séquence
+            sorted_studies = sorted(studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
+            
+            # 3. Traiter chaque visite
+            for study_index, study_seqs in enumerate(sorted_studies):
+                # La date de la visite est dictée par sa toute première séquence
+                study_date_str = min(s["dt"] for s in study_seqs).strftime("%Y%m%d_%H%M")
+                
+                # Baseline = Visite 0
+                target_folder_name = "imgs" if study_index == 0 else f"imgs_{study_date_str}"
                 imgs_dir = os.path.join(patient_mri_root, target_folder_name)
+                print(f" -> [IRM VISITE {study_index+1}] Date {study_date_str} - Cible : {target_folder_name}/")
                 
-                # On enregistre l'adresse de destination pour le futur masque !
-                uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_rm" if index == 0 else f"dicom_mask_rm_{date_str}"
+                # Vider/Créer le log temporel pour cette nouvelle visite
+                os.makedirs(imgs_dir, exist_ok=True)
+                with open(os.path.join(imgs_dir, "DCE_temporal_log.txt"), "w") as f:
+                    f.write(f"=== LOG TEMPOREL GLOBAL - VISITE {study_index+1} ===\n")
                 
-                print(f" -> [IRM DCE] Visite {index+1} dirigée vers : {target_folder_name}/")
-                file_prefix = f"{patient_id}_{index:04d}"
+                # 4. À l'intérieur de la visite, on trie les séries chronologiquement
+               
+                # Le Tri de Phase Ultime de la V6 :
+                # _1. TemporalPositionIdentifier (Si le constructeur l'a rempli, c'est la vérité)
+                # _2. Heure d'acquisition (Le plus fiable généralement)
+                # _3. SeriesNumber (Fallback si les temps sont écrasés)
+                seq_sorted = sorted(study_seqs, key=lambda x: (
+                    x["temp_pos"] if x["temp_pos"] is not None else 99999,
+                    x["dt"],
+                    x["series_num"]
+                ))
                 
-                # Conversion NIfTI + Split 4D si besoin
-                nb_gen = convert_files_to_nifti_dcm2niix(seq["files"], imgs_dir, file_prefix, patient_mri_root)
-                if nb_gen > 0:
-                    mri_phases_distribution[nb_gen] += 1
-                    # On génère le fichier txt qui donne le profil d'injection (écarts de temps)
-                    generate_temporal_log(seq["files"], imgs_dir)
+                phases_dans_visite = 0
+                
+                for phase_index, seq in enumerate(seq_sorted):
+                    # Mémorisation pour le masque
+                    uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_rm" if study_index == 0 else f"dicom_mask_rm_{study_date_str}"
+                    
+                    # On numérote la phase séquentiellement dans la visite
+                    file_prefix = f"{patient_id}_{phase_index:04d}"
+                    
+                    nb_gen = convert_files_to_nifti_dcm2niix(seq["files"], imgs_dir, file_prefix, patient_mri_root)
+                    if nb_gen > 0:
+                        phases_dans_visite += nb_gen
+                        generate_temporal_log(seq["files"], imgs_dir)
+                
+                # Bilan statistique global
+                mri_phases_distribution[phases_dans_visite] += 1
 
         # --------------------------------------------------------------------
-        # TRAITEMENT PET
+        # TRAITEMENT PET (Regroupement par visite)
         # --------------------------------------------------------------------
         if "PT" in modalities:
-            pt_sorted = sorted(modalities["PT"], key=lambda x: x["dt"])
             patient_pet_root = os.path.join(out_petct_root, patient_id)
             
-            for index, seq in enumerate(pt_sorted):
-                date_str = seq["dt"].strftime("%Y%m%d_%H%M")
+            pt_studies = defaultdict(list)
+            for seq in modalities["PT"]: pt_studies[seq["study_uid"]].append(seq)
+            sorted_pt_studies = sorted(pt_studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
+
+            for study_index, study_seqs in enumerate(sorted_pt_studies):
+                study_date_str = min(s["dt"] for s in study_seqs).strftime("%Y%m%d_%H%M")
+                tep_folder_name = "TEP" if study_index == 0 else f"TEP_{study_date_str}"
+                imgs_folder_name = "imgs" if study_index == 0 else f"imgs_{study_date_str}"
                 
-                tep_folder_name = "TEP" if index == 0 else f"TEP_{date_str}"
-                imgs_folder_name = "imgs" if index == 0 else f"imgs_{date_str}"
+                seq_sorted = sorted(study_seqs, key=lambda x: x["dt"])
                 
-                # Mémorisation du dossier cible pour un masque métabolique
-                uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_pet" if index == 0 else f"dicom_mask_pet_{date_str}"
-                
-                tep_dicom_dir = os.path.join(patient_pet_root, tep_folder_name, seq["uid"][-5:])
-                imgs_dir = os.path.join(patient_pet_root, imgs_folder_name)
-                os.makedirs(tep_dicom_dir, exist_ok=True)
-                
-                stats["pet_traites"] += 1
-                
-                # --- AUDIT SUV ET LOGGING ---
-                suv_check = check_pet_suv_metadata(seq["files"])
-                if not suv_check["valid"]:
-                    # On alimente le rapport d'erreurs qui sera écrit à la fin
-                    alerte = f"[MANQUANT] Patient {patient_id} Visite {index+1} : {suv_check['missing']} (Unité native: {suv_check['units']})"
-                    print(f"    -> {alerte}")
-                    rapport_erreurs.append(alerte)
-                
-                # On sauvegarde les originaux DICOM (utiles plus tard pour extract_patient_parameters)
-                for f in seq["files"]: shutil.copy2(f, tep_dicom_dir)
-                
-                # Le script SUV.py a besoin que le NIfTI Raw ait le même identifiant que le dossier TEP
-                time_marker = "Baseline" if index == 0 else date_str
-                out_raw_pet_path = os.path.join(imgs_dir, f"{patient_id}_TEP_{time_marker}_{seq['uid'][-5:]}_RAW.nii.gz")
-                print(f" -> [PET] Visite {index+1} : Dossier {tep_folder_name}/ <---> NIfTI {os.path.basename(out_raw_pet_path)}")
-                
-                convert_files_to_nifti_plastimatch(seq["files"], out_raw_pet_path)
+                for seq in seq_sorted:
+                    uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_pet" if study_index == 0 else f"dicom_mask_pet_{study_date_str}"
+                    tep_dicom_dir = os.path.join(patient_pet_root, tep_folder_name, seq["uid"][-5:])
+                    imgs_dir = os.path.join(patient_pet_root, imgs_folder_name)
+                    os.makedirs(tep_dicom_dir, exist_ok=True)
+                    
+                    stats["pet_traites"] += 1
+                    
+                    suv_check = check_pet_suv_metadata(seq["files"])
+                    if not suv_check["valid"]:
+                        rapport_erreurs.append(f"[MANQUANT] Patient {patient_id} : {suv_check['missing']}")
+                    
+                    for f in seq["files"]: shutil.copy2(f, tep_dicom_dir)
+                    
+                    time_marker = "Baseline" if study_index == 0 else study_date_str
+                    out_raw_pet_path = os.path.join(imgs_dir, f"{patient_id}_TEP_{time_marker}_{seq['uid'][-5:]}_RAW.nii.gz")
+                    print(f" -> [PET VISITE {study_index+1}] NIfTI généré : {os.path.basename(out_raw_pet_path)}")
+                    
+                    convert_files_to_nifti_plastimatch(seq["files"], out_raw_pet_path)
 
         # --------------------------------------------------------------------
-        # TRAITEMENT CT
+        # TRAITEMENT CT (Regroupement par visite)
         # --------------------------------------------------------------------
         if "CT" in modalities:
-            ct_sorted = sorted(modalities["CT"], key=lambda x: x["dt"])
-            for index, seq in enumerate(ct_sorted):
-                date_str = seq["dt"].strftime("%Y%m%d_%H%M")
-                imgs_folder_name = "imgs" if index == 0 else f"imgs_{date_str}"
+            ct_studies = defaultdict(list)
+            for seq in modalities["CT"]: ct_studies[seq["study_uid"]].append(seq)
+            sorted_ct_studies = sorted(ct_studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
+
+            for study_index, study_seqs in enumerate(sorted_ct_studies):
+                study_date_str = min(s["dt"] for s in study_seqs).strftime("%Y%m%d_%H%M")
+                imgs_folder_name = "imgs" if study_index == 0 else f"imgs_{study_date_str}"
                 
-                # Si le masque a été fait sur le CT plutôt que le PET
-                uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_pet" if index == 0 else f"dicom_mask_pet_{date_str}"
-                
-                imgs_dir = os.path.join(out_petct_root, patient_id, imgs_folder_name)
-                stats["ct_traites"] += 1
-                out_path = os.path.join(imgs_dir, f"{patient_id}_TDM_{seq['uid'][-5:]}.nii.gz")
-                convert_files_to_nifti_plastimatch(seq["files"], out_path)
+                for seq in study_seqs:
+                    uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_pet" if study_index == 0 else f"dicom_mask_pet_{study_date_str}"
+                    imgs_dir = os.path.join(out_petct_root, patient_id, imgs_folder_name)
+                    stats["ct_traites"] += 1
+                    out_path = os.path.join(imgs_dir, f"{patient_id}_TDM_{seq['uid'][-5:]}.nii.gz")
+                    convert_files_to_nifti_plastimatch(seq["files"], out_path)
 
         # --------------------------------------------------------------------
         # TRAITEMENT MASQUES (AVEC MATCHING STRICT)
@@ -507,6 +581,7 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         f"Masques PET/CT isolés         : {stats['masques_pet']}",
         f"Masques IRM isolés            : {stats['masques_irm']}",
         f"Masques Orphelins (DANGER)    : {stats['masques_orphelins']}",
+        f"Séquences IRM dérivées virées : {stats['irm_rejetees']} (MIP, SUB, etc.)",
         f"Séquences IRM secondaires     : {stats['irm_secondaires']}",
         f"Séquences exotiques archivées : {stats['autres_modalites']}",
         "\n--- DISTRIBUTION DES PHASES IRM (T1/DCE) ---"
@@ -515,8 +590,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
     if not mri_phases_distribution:
         rapport_statistique.append("-> Aucune séquence IRM principale (T1/DCE) validée.")
     else:
-        for nb_phases, nb_patients in sorted(mri_phases_distribution.items()):
-            rapport_statistique.append(f"-> {nb_patients} patient(s) possèdent {nb_phases} phase(s) (Baseline ou Suivi).")
+        for nb_phases, nb_visites in sorted(mri_phases_distribution.items()):
+            rapport_statistique.append(f"-> {nb_visites} visite(s) possèdent {nb_phases} phase(s) (Baseline ou Suivi).")
             if nb_phases != REF_NB_IRMS_PHASES:
                 rapport_statistique[-1] += " [HORS STANDARD]"
 
@@ -525,14 +600,14 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         print(ligne)
 
     # Écriture définitive du fichier de log général à la racine du projet
-    chemin_rapport = os.path.join(os.path.dirname(out_petct_root), "rapport_ingestion_v4.txt")
+    chemin_rapport = os.path.join(os.path.dirname(out_petct_root), "rapport_ingestion_v6.txt")
     with open(chemin_rapport, "w", encoding="utf-8") as f:
         f.write("\n".join(rapport_erreurs))
         f.write("\n")
         f.write("\n".join(rapport_statistique))
         
     print(f"\n -> Rapport détaillé écrit avec succès ici : {chemin_rapport}")
-    print("\n=== INGÉSTION V4 TERMINÉE AVEC SUCCÈS ===")
+    print("\n=== INGÉSTION V6 TERMINÉE AVEC SUCCÈS ===")
 
 if __name__ == "__main__":
     # Définition des chemins relatifs
