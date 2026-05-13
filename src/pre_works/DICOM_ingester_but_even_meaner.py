@@ -111,30 +111,42 @@ def generate_temporal_log(dicom_paths: list, output_dir: str):
             f.write(f" - Ecart {i-1}->{i} : {(dt_times[i] - dt_times[i-1]).total_seconds()} s\n")
 
 # --- NOUVEAU : FILTRES CLINIQUES ANTI-RECONSTRUCTIONS ---
-# Les mots qui trahissent une image reconstruite ou un mauvais plan d'acquisition
-# On ajoute KTRANS, KEP, VE et PARAMETRIC aux mots exclus pour bien nettoyer QIN-Breast
-EXCLUDE_TERMS = [
-    "SUB", "SOUSTRACTION", "MIP", "ADC", "MAP", "TRACE", 
-    "SCOUT", "LOC", "LOCALIZER", "REFORMAT", "MPR", 
-    "COR", "SAG", "CORONAL", "SAGITTAL",
-    "KTRANS", "KEP", "VE", "PARAMETRIC" # Spécifique QIN-Breast
+# La liste très permissive pour attraper toutes les vraies séquences (Constructeurs: GE, Philips, Siemens...)
+
+DCE_INCLUDE_TERMS = [
+    "DCE", "DYNAMIC", "DYN", "VIBRANT", "THRIVE", "E-THRIVE", 
+    "POST", "PRE", "T1", "PERF", "DISCO", "LAVA", "TWIST"
 ]
 
-def is_valid_dce_phase(desc: str, image_type: list) -> bool:
-    """
-    Filtre adapté pour TCIA / QIN-Breast.
-    On ne rejette plus les "DERIVED" car les DCE 4D ont souvent subi une 
-    correction de mouvement qui les rend "Dérivés". 
-    On se fie uniquement à la description pour tuer les MIP, Scouts et Cartes.
-    """
+# La liste agressive pour tuer les parasites (On a retiré "MAP" isolé et remplacé par "T1-MAP")
+EXCLUDE_TERMS = [
+    "SUB", "SOUSTRACTION", "MIP", "ADC", "TRACE", 
+    "SCOUT", "LOC", "LOCALIZER", "REFORMAT", "MPR", 
+    "COR", "SAG", "CORONAL", "SAGITTAL",
+    "KTRANS", "KEP", "VE", "PARAMETRIC", "TTP", "MTT", "CBF", "CBV", "T1-MAP"
+]
+
+def looks_like_dce(desc: str) -> bool:
+    """Pré-filtre très permissif pour attraper tout ce qui ressemble à de la perfusion/dynamique."""
     desc_upper = desc.upper()
+    return any(term in desc_upper for term in DCE_INCLUDE_TERMS)
+
+def is_valid_dce_phase(desc: str, image_type: list) -> bool:
+    """Filtre anti-reconstructions strict."""
+    desc_upper = desc.upper()
+    img_type_str = [str(x).upper() for x in image_type] if image_type else []
     
-    # Rejet strict par mot-clé dans la description
-    if any(x in desc_upper for x in EXCLUDE_TERMS):
-        return False
-        
-    # On laisse passer les DERIVED notamment pour QIN-Breast (DCE 4D recalés).
-    # On fait confiance aux mots-clés ci-dessus pour faire le vrai ménage.
+    # 1. Anti-Parasites strict
+    for term in EXCLUDE_TERMS:
+        if term in desc_upper: return False
+        if any(term in t for t in img_type_str): return False
+            
+    # 2. Gestion intelligente du DERIVED
+    if "DERIVED" in img_type_str or "SECONDARY" in img_type_str:
+        # On demande que la description matche notre whitelist permissive
+        if not looks_like_dce(desc):
+            return False
+            
     return True
 
 def get_referenced_series_uid(file_paths: list) -> str:
@@ -395,8 +407,8 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         elif modality == "CT": 
             patient_data[patient_id]["CT"].append(series_info)
         elif modality == "MR":
-            if "T1" in meta["SeriesDescription"] or "DCE" in meta["SeriesDescription"]:
-                # Le Filtre Absolu intervient ici
+            # NOUVEAU : On utilise la fonction permissive au lieu du simple test "T1/DCE"
+            if looks_like_dce(meta["SeriesDescription"]):
                 if is_valid_dce_phase(meta["SeriesDescription"], meta["ImageType"]):
                     patient_data[patient_id]["MR"].append(series_info)
                 else:
@@ -574,17 +586,24 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         # --------------------------------------------------------------------
         if "MR_AUTRES" in modalities:
             for seq in modalities["MR_AUTRES"]:
-                # Affichage explicite pour comprendre pourquoi c'est rejeté
                 print(f" -> [IRM REJETÉE/SECONDAIRE] Archivage de : {seq['desc']}")
                 stats["irm_secondaires"] += 1
                 
                 clean_desc = "".join(c if c.isalnum() else "_" for c in seq["desc"])
                 clean_desc = "_".join(filter(None, clean_desc.split("_")))
                 autres_dir = os.path.join(out_mri_root, patient_id, "autres_irm")
-                file_prefix = f"{patient_id}_{clean_desc}"
+                file_prefix = f"{patient_id}_{clean_desc}_{seq['uid'][-5:]}" # Précaution au cas où plusieurs séries secondaires auraient la même description
                 
-                # On les convertit quand même via dcm2niix pour archive
-                convert_files_to_nifti_dcm2niix(seq["files"], autres_dir, file_prefix, os.path.join(out_mri_root, patient_id))
+                # NOUVEAU : On n'utilise PAS notre fonction de split pour les secondaires.
+                # On exécute juste dcm2niix en direct et on laisse tel quel.
+                os.makedirs(autres_dir, exist_ok=True)
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    for f in seq["files"]: shutil.copy2(f, tmp_dir)
+                    try:
+                        commande = [DCM2NIIX_EXE, "-z", "y", "-f", file_prefix, "-o", autres_dir, tmp_dir]
+                        subprocess.run(commande, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                    except Exception as e:
+                        print(f"    [ERREUR dcm2niix archive] : {e}")
 
         # --------------------------------------------------------------------
         # TRAITEMENT DES AUTRES MODALITÉS (RTDOSE, RTPLAN, PR, etc.)
