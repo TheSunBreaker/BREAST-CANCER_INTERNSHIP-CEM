@@ -112,28 +112,29 @@ def generate_temporal_log(dicom_paths: list, output_dir: str):
 
 # --- NOUVEAU : FILTRES CLINIQUES ANTI-RECONSTRUCTIONS ---
 # Les mots qui trahissent une image reconstruite ou un mauvais plan d'acquisition
+# On ajoute KTRANS, KEP, VE et PARAMETRIC aux mots exclus pour bien nettoyer QIN-Breast
 EXCLUDE_TERMS = [
     "SUB", "SOUSTRACTION", "MIP", "ADC", "MAP", "TRACE", 
     "SCOUT", "LOC", "LOCALIZER", "REFORMAT", "MPR", 
-    "COR", "SAG", "CORONAL", "SAGITTAL"
+    "COR", "SAG", "CORONAL", "SAGITTAL",
+    "KTRANS", "KEP", "VE", "PARAMETRIC" # Spécifique QIN-Breast
 ]
 
 def is_valid_dce_phase(desc: str, image_type: list) -> bool:
     """
-    Filtre impitoyable pour ne garder que les phases dynamiques brutes.
+    Filtre adapté pour TCIA / QIN-Breast.
+    On ne rejette plus les "DERIVED" car les DCE 4D ont souvent subi une 
+    correction de mouvement qui les rend "Dérivés". 
+    On se fie uniquement à la description pour tuer les MIP, Scouts et Cartes.
     """
     desc_upper = desc.upper()
     
-    # 1. Rejet par mot-clé dans la description
+    # Rejet strict par mot-clé dans la description
     if any(x in desc_upper for x in EXCLUDE_TERMS):
         return False
         
-    # 2. Rejet par le type d'image DICOM (Très puissant)
-    # L'image doit être ORIGINAL et PRIMARY. Si elle est DERIVED (ex: MIP) ou SECONDARY, on jette.
-    img_type_str = [str(x).upper() for x in image_type] if image_type else []
-    if "DERIVED" in img_type_str or "SECONDARY" in img_type_str:
-        return False
-        
+    # On laisse passer les DERIVED notamment pour QIN-Breast (DCE 4D recalés).
+    # On fait confiance aux mots-clés ci-dessus pour faire le vrai ménage.
     return True
 
 def get_referenced_series_uid(file_paths: list) -> str:
