@@ -42,7 +42,13 @@ def prepare_pet_ct_for_nnunet(
         if not os.path.exists(imgs_dir) or not os.path.exists(mask_dir):
             continue
 
-        pet_files = glob.glob(os.path.join(imgs_dir, "*TEP*.nii.gz")) + glob.glob(os.path.join(imgs_dir, "*SUV*.nii.gz"))
+        # 1. On cherche STRICTEMENT le fichier converti en SUV
+        pet_files = glob.glob(os.path.join(imgs_dir, "*_SUV.nii.gz"))
+        
+        # 2. Sécurité : Si le script de conversion SUV n'a pas tourné ou a échoué
+        if not pet_files:
+            print(f" [ALERTE CRITIQUE] Aucun fichier SUV trouvé pour {subj} ! Utilisation du RAW par défaut.")
+            pet_files = glob.glob(os.path.join(imgs_dir, "*_RAW.nii.gz"))
         ct_files = glob.glob(os.path.join(imgs_dir, "*TDM*.nii.gz"))
         mask_files = glob.glob(os.path.join(mask_dir, "*.nii.gz"))
 
