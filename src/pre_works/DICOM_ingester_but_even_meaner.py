@@ -294,9 +294,17 @@ def convert_files_to_nifti_plastimatch(file_paths: list, output_path: str) -> bo
                 PLASTIMATCH_EXE, "convert", "--input", tmp_dicom_dir,
                 "--output-img", output_path, "--output-type", "float"
             ]
-            subprocess.run(commande, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            # NOUVEAU : On enlève le DEVNULL pour que les erreurs critiques s'affichent
+            subprocess.run(commande, check=True)
             return True
-        except Exception:
+        except subprocess.CalledProcessError as e:
+            print(f"    [CRASH PLASTIMATCH] Erreur d'exécution : {e}")
+            return False
+        except FileNotFoundError:
+            print(f"    [CRASH PLASTIMATCH] Exécutable introuvable au chemin : {PLASTIMATCH_EXE}")
+            return False
+        except Exception as e:
+            print(f"    [CRASH PLASTIMATCH] Erreur inconnue : {e}")
             return False
 
 
@@ -397,9 +405,9 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             "desc": meta["SeriesDescription"], 
             "dt": dt,
             "study_uid": meta["StudyUID"],
-            # NOUVEAU V6 : on passe ces infos pour le futur tri
             "temp_pos": meta["TempPos"],
-            "series_num": meta["SeriesNumber"]
+            "series_num": meta["SeriesNumber"],
+            "modality": modality
         }
         # On ventile dans des "paniers" selon la modalité
         if modality == "PT": 
@@ -425,7 +433,7 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             else: 
                 patient_data[patient_id]["SEG_PT"].append(series_info)
         else: 
-            patient_data[patient_id]["AUTRES"].append({"modality": modality, **series_info})
+            patient_data[patient_id]["AUTRES"].append(series_info)
 
     # Dictionnaire mémoire crucial : permet de dire "L'image avec tel UID a été rangée dans tel dossier cible"
     uid_to_target_mask_folder = {}
