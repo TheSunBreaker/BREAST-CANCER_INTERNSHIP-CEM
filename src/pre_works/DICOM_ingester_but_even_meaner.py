@@ -568,6 +568,46 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                     
                     for f in seq["files"]: shutil.copy2(f, mask_dir)
 
+        # --------------------------------------------------------------------
+        # TRAITEMENT DES SÉQUENCES IRM REJETÉES / SECONDAIRES
+        # --------------------------------------------------------------------
+        if "MR_AUTRES" in modalities:
+            for seq in modalities["MR_AUTRES"]:
+                # Affichage explicite pour comprendre pourquoi c'est rejeté
+                print(f" -> [IRM REJETÉE/SECONDAIRE] Archivage de : {seq['desc']}")
+                stats["irm_secondaires"] += 1
+                
+                clean_desc = "".join(c if c.isalnum() else "_" for c in seq["desc"])
+                clean_desc = "_".join(filter(None, clean_desc.split("_")))
+                autres_dir = os.path.join(out_mri_root, patient_id, "autres_irm")
+                file_prefix = f"{patient_id}_{clean_desc}"
+                
+                # On les convertit quand même via dcm2niix pour archive
+                convert_files_to_nifti_dcm2niix(seq["files"], autres_dir, file_prefix, os.path.join(out_mri_root, patient_id))
+
+        # --------------------------------------------------------------------
+        # TRAITEMENT DES AUTRES MODALITÉS (RTDOSE, RTPLAN, PR, etc.)
+        # --------------------------------------------------------------------
+        if "AUTRES" in modalities:
+            for seq in modalities["AUTRES"]:
+                print(f" -> [AUTRE MODALITÉ] Archivage brut de : {seq['modality']} ({seq['desc']})")
+                stats["autres_modalites"] += 1
+                
+                clean_desc = "".join(c if c.isalnum() else "_" for c in seq["desc"])
+                clean_desc = "_".join(filter(None, clean_desc.split("_"))) or "SANS_DESCRIPTION"
+                other_dicom_dir = os.path.join(out_others_root, patient_id, seq["modality"], f"{clean_desc}_{seq['uid'][-5:]}")
+                os.makedirs(other_dicom_dir, exist_ok=True)
+                
+                # Copie brute des DICOM, pas de NIfTI pour les formats inconnus
+                for f in seq["files"]:
+                    shutil.copy2(f, other_dicom_dir)
+
+        # --------------------------------------------------------------------
+        # SÉCURITÉ VISUELLE : SI LE PATIENT EST TOTALEMENT VIDE DE DONNÉES CIBLES
+        # --------------------------------------------------------------------
+        if not any(k in modalities for k in ["MR", "PT", "CT", "SEG_MR", "SEG_PT"]):
+            print(" -> [ALERTE] Patient sans aucune donnée d'imagerie principale exploitable (Ni DCE, ni PET, ni CT, ni Masque).")      
+
     # --------------------------------------------------------------------
     # 4. ÉCRITURE DES RAPPORTS ET LOGS FINAUX (CORRIGÉ)
     # --------------------------------------------------------------------
