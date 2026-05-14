@@ -8,7 +8,7 @@ import os
 import pydicom
 import numpy as np
 
-MASK_DIR = r"./mes_masques"
+MASK_DIR = r"."
 
 def safe_get(obj, attr, default="UNKNOWN"):
     return str(getattr(obj, attr, default))
