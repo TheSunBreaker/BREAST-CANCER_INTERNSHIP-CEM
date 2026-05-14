@@ -35,33 +35,32 @@ def find_reference_nifti(current_dir: str) -> str:
     Cherche un NIfTI de référence pour rastériser les RTSTRUCT, 
     en respectant strictement la logique temporelle de l'Ingesteur V6.
     """
-    # 1. Dans le dossier courant (Au cas où tu l'as copié manuellement)
+    # 1. Dans le dossier courant
     niftis = glob.glob(os.path.join(current_dir, "*.nii.gz"))
     niftis = [n for n in niftis if "mask" not in n.lower()]
     if niftis: return niftis[0]
 
     # 2. Déduction intelligente via l'arborescence
-    # current_dir est censé être ".../dicom_mask_rm_20240101/a_verifier"
-    parent_dir = os.path.dirname(current_dir) # ex: dicom_mask_rm_20240101
-    patient_dir = os.path.dirname(parent_dir) # ex: DUKE_001
+    # On détermine si on est dans 'a_verifier' ou directement dans le dossier masque
+    current_name = os.path.basename(current_dir)
     
-    parent_name = os.path.basename(parent_dir)
-    
-    # On vérifie qu'on est bien dans la bonne structure
-    if parent_name.startswith("dicom_mask_"):
-        # On extrait le suffixe temporel (ex: "_20240101" ou "" pour la Baseline)
-        # En supprimant "dicom_mask_rm" ou "dicom_mask_pet"
-        suffixe = parent_name.replace("dicom_mask_rm", "").replace("dicom_mask_pet", "").replace("dicom_mask_orphelins", "")
+    if current_name == "a_verifier":
+        mask_folder_name = os.path.basename(os.path.dirname(current_dir))
+        patient_dir = os.path.dirname(os.path.dirname(current_dir))
+    else:
+        mask_folder_name = current_name
+        patient_dir = os.path.dirname(current_dir)
         
-        # On reconstruit le nom du dossier image cible
+    # On vérifie qu'on pointe bien sur un dossier de type masque
+    if mask_folder_name.startswith("dicom_mask_"):
+        suffixe = mask_folder_name.replace("dicom_mask_rm", "").replace("dicom_mask_pet", "").replace("dicom_mask_orphelins", "")
+        
         target_imgs_folder = f"imgs{suffixe}"
         target_imgs_dir = os.path.join(patient_dir, target_imgs_folder)
         
         if os.path.exists(target_imgs_dir):
             target_niftis = glob.glob(os.path.join(target_imgs_dir, "*.nii.gz"))
             if target_niftis:
-                # Tous les NIfTI d'un même dossier visite partagent la même géométrie spatiale.
-                # Prendre le premier (ex: la phase 0 du DCE, ou le PET) est mathématiquement parfait.
                 return target_niftis[0]
 
     return None
