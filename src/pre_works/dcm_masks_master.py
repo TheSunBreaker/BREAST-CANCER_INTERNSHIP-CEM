@@ -606,10 +606,15 @@ def analyze_multiple_masks(loaded_data: list[dict], log: list[str]) -> dict:
 
     # Si plusieurs masques sont toujours en "keep" ET qu'aucun n'a été mis en
     # "manual", c'est qu'ils sont tous distincts (Dice < OVERLAP_THRESHOLD).
-    # Dans ce cas, on les groupe pour une FUSION sémantique multi-classes.
+    # Dans ce cas, on les groupe pour une FUSION sémantique multi-classes, si possible !
     has_manual = len(final_manual) > 0
 
-    if not has_manual and len(final_keeps) > 1:
+    # --- CORRECTION DE LA FUSION : VÉRIFICATION DES SHAPES ---
+    # On ne peut fusionner que si TOUS les masques cibles ont EXACTEMENT la même shape.
+    shapes_uniques = set(d["shape"] for d in final_keeps)
+    can_fuse = (len(shapes_uniques) == 1)
+
+    if not has_manual and len(final_keeps) > 1 and can_fuse:
         # Promotion "keep" → "fuse" pour déclencher la fusion sémantique
         log.append(
             f"    → [FUSION PROGRAMMÉE] {len(final_keeps)} structures distinctes "
@@ -620,7 +625,16 @@ def analyze_multiple_masks(loaded_data: list[dict], log: list[str]) -> dict:
         fuse_paths = [d["path"] for d in final_keeps]
         keep_paths = []
     else:
-        # Cas simple : 1 masque valid ou situation mixte avec des manuels
+        # Cas simples :
+        # - 1 seul masque valide
+        # - Des masques en "manuel" bloquent la fusion
+        # - NOUVEAU : Des masques valides mais avec des grilles (shapes) incompatibles
+        if not has_manual and len(final_keeps) > 1 and not can_fuse:
+            log.append(
+                "    → [FUSION ANNULÉE] Les masques n'ont pas la même dimension (shape). "
+                "Ils seront convertis séparément."
+            )
+            
         fuse_paths = []
         keep_paths = [d["path"] for d in final_keeps]
 
