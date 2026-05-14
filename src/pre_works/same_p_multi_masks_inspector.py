@@ -1,7 +1,7 @@
 """"
 Petit script pour ausculter les masques appartenant à un même patient pour une même visite, histoire de mieux savoir comment les traiter :
 Les fusionner ? En prendre un seul ? Etc. 
-A mettre dans le mêem dossier que les masques à ausculter. 
+A mettre dans le mêem dossier que les masques FORMAT DICOM à ausculter. 
 """"
 
 import os
