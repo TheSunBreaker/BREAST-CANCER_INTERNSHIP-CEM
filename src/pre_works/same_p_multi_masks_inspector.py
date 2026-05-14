@@ -20,6 +20,8 @@ for root, _, files in os.walk(MASK_DIR):
         path = os.path.join(root, f)
 
         try:
+            if not f.lower().endswith(".dcm"):
+                continue
             ds = pydicom.dcmread(path, force=True)
 
             if ds.Modality != "SEG":
