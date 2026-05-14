@@ -679,6 +679,7 @@ def process_patient_masks(
     project_root    : str,
     mask_prefix     : str,
     global_log_lines: list[str],
+    global_manual_cases: list[str] = None
 ) -> int:
     """
     Parcourt une racine de projet, traite tous les dossiers de masques correspondant
@@ -1042,6 +1043,10 @@ def process_patient_masks(
                         print(msg_verif)
                         global_log_lines.append(msg_verif)
 
+                        # --- NOUVEAU : ENREGISTREMENT POUR LE RÉSUMÉ FINAL ---
+                        if global_manual_cases is not None:
+                            global_manual_cases.append(f" - Patient {patient_id} ({source_mask_folder}) : {os.path.basename(man_path)}")
+
                 # =============================================================
                 # ACTION 4 : LOG DES MASQUES REJETÉS
                 # On les laisse en place dans dicom_mask_* (non-destructif),
@@ -1139,11 +1144,14 @@ if __name__ == "__main__":
         "",
     ]
 
+    global_manual_cases = []
+
     # ── PASSE 1 : Masques IRM baseline ───────────────────────────────────────
     process_patient_masks(
         project_root     = args.mri_root,
         mask_prefix      = "dicom_mask_rm",
         global_log_lines = global_log_lines,
+        global_manual_cases = global_manual_cases
     )
 
     # ── PASSE 2 : Masques PET/CT baseline ────────────────────────────────────
@@ -1151,6 +1159,7 @@ if __name__ == "__main__":
         project_root     = args.petct_root,
         mask_prefix      = "dicom_mask_pet",
         global_log_lines = global_log_lines,
+        global_manual_cases = global_manual_cases
     )
 
     # ── PASSE 3 : Masques orphelins IRM ──────────────────────────────────────
@@ -1161,6 +1170,7 @@ if __name__ == "__main__":
         project_root     = args.mri_root,
         mask_prefix      = "dicom_mask_orphelins",
         global_log_lines = global_log_lines,
+        global_manual_cases = global_manual_cases
     )
 
     # ── PASSE 4 : Masques orphelins PET/CT ───────────────────────────────────
@@ -1168,7 +1178,19 @@ if __name__ == "__main__":
         project_root     = args.petct_root,
         mask_prefix      = "dicom_mask_orphelins",
         global_log_lines = global_log_lines,
+        global_manual_cases = global_manual_cases
     )
+
+    # --- NOUVEAU : CRÉATION DU TABLEAU DE BORD FINAL ---
+    global_log_lines.append("\n" + "=" * 70)
+    global_log_lines.append("  TABLEAU DE BORD DES ACTIONS REQUISES (INSPECTION MANUELLE)")
+    global_log_lines.append("=" * 70)
+    if not global_manual_cases:
+        global_log_lines.append("  -> AUCUN MASQUE NE REQUIERT D'INSPECTION MANUELLE. TOUT EST PROPRE.")
+    else:
+        global_log_lines.append(f"  -> {len(global_manual_cases)} MASQUE(S) NÉCESSITENT VOTRE ATTENTION :\n")
+        global_log_lines.extend(global_manual_cases)
+    global_log_lines.append("=" * 70 + "\n")
 
     # ── Écriture du rapport global ────────────────────────────────────────────
     # Tout est centralisé dans un seul fichier texte aux côtés du rapport
