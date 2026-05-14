@@ -2,7 +2,7 @@
 """
 Orchestrateur IRM DCE vers nnU-Net V2.
 Vérifie et force l'alignement de toutes les phases sur la phase 0 (T1 pré-contraste),
-applique la normalisation globale, et aligne le masque.
+applique la normalisation globale, et aligne le masque (si entraînement).
 """
 
 import os
@@ -17,15 +17,20 @@ def extract_dce_to_nnunet_flat(
     nnunet_root: str,
     dataset_id: int = 1,
     num_channels: int = 4,
-    channel_prefix: str = "DCE"
+    channel_prefix: str = "DCE",
+    is_inference: bool = False # NOUVEAU : Flag d'inférence
 ):
     dataset_name = f"Dataset{dataset_id:03d}_{channel_prefix}"
     nnunet_raw = os.path.join(nnunet_root, "nnUNet_raw", dataset_name)
-    imagesTr_dir = os.path.join(nnunet_raw, "imagesTr")
-    labelsTr_dir = os.path.join(nnunet_raw, "labelsTr")
+    
+    # MODIFICATION : imagesTs si inférence, sinon imagesTr
+    target_images_dir = os.path.join(nnunet_raw, "imagesTs" if is_inference else "imagesTr")
+    os.makedirs(target_images_dir, exist_ok=True)
 
-    os.makedirs(imagesTr_dir, exist_ok=True)
-    os.makedirs(labelsTr_dir, exist_ok=True)
+    # On ne crée le dossier de labels que si on est en entraînement
+    if not is_inference:
+        labelsTr_dir = os.path.join(nnunet_raw, "labelsTr")
+        os.makedirs(labelsTr_dir, exist_ok=True)
 
     subjects = sorted([s for s in os.listdir(subjects_dir) if os.path.isdir(os.path.join(subjects_dir, s))])
     print(f" {len(subjects)} patients trouvés dans le dossier source.\n")
@@ -37,7 +42,11 @@ def extract_dce_to_nnunet_flat(
         imgs_dir = os.path.join(subj_path, "imgs")
         mask_dir = os.path.join(subj_path, "mask")
 
-        if not os.path.exists(imgs_dir) or not os.path.exists(mask_dir):
+        if not os.path.exists(imgs_dir):
+            continue
+
+        # MODIFICATION : Le masque n'est requis qu'en entraînement
+        if not is_inference and not os.path.exists(mask_dir):
             continue
 
         fichiers_images = sorted(glob.glob(os.path.join(imgs_dir, "*.nii.gz")))
@@ -45,8 +54,9 @@ def extract_dce_to_nnunet_flat(
             print(f" [SKIP] {subj}: Pas assez de canaux (trouvé {len(fichiers_images)}, attendu {num_channels})")
             continue
 
-        fichiers_masques = sorted(glob.glob(os.path.join(mask_dir, "*.nii.gz")))
-        if not fichiers_masques:
+        # MODIFICATION : Le glob des masques devient conditionnel
+        fichiers_masques = [] if is_inference else sorted(glob.glob(os.path.join(mask_dir, "*.nii.gz")))
+        if not is_inference and not fichiers_masques:
             continue
 
         print(f"[INFO] Traitement patient : {subj}")
@@ -74,7 +84,7 @@ def extract_dce_to_nnunet_flat(
             aligned_phases_paths.append(tmp_out)
 
         # --- ÉTAPE 2 : Normalisation Globale (MAMA-MIA) ---
-        chemins_sorties = [os.path.join(imagesTr_dir, f"{subj}_{idx:04d}.nii.gz") for idx in range(num_channels)]
+        chemins_sorties = [os.path.join(target_images_dir, f"{subj}_{idx:04d}.nii.gz") for idx in range(num_channels)]
         
         try:
             # On nourrit l'algorithme de normalisation avec nos phases garanties alignées
@@ -83,28 +93,30 @@ def extract_dce_to_nnunet_flat(
             print(f"   [ERREUR] Normalisation échouée pour {subj} : {e}")
             continue
 
-        # --- ÉTAPE 3 : Alignement du Masque sur la référence ---
-        dst_mask = os.path.join(labelsTr_dir, f"{subj}.nii.gz")
-        enforce_strict_alignment(
-            ref_path=ref_phase_path,
-            moving_path=fichiers_masques[0],
-            out_path=dst_mask,
-            is_mask=True
-        )
+        # --- ÉTAPE 3 : Alignement du Masque (SEULEMENT EN ENTRAÎNEMENT) ---
+        if not is_inference:
+            dst_mask = os.path.join(labelsTr_dir, f"{subj}.nii.gz")
+            enforce_strict_alignment(
+                ref_path=ref_phase_path,
+                moving_path=fichiers_masques[0],
+                out_path=dst_mask,
+                is_mask=True
+            )
 
         valid_subjects += 1
 
-    # Génération du dataset.json
-    channel_names = {str(i): f"{channel_prefix}_{i}" for i in range(num_channels)}
-    dataset_json = {
-        "channel_names": channel_names,
-        "labels": {"background": 0, "lesion": 1},
-        "numTraining": valid_subjects,
-        "file_ending": ".nii.gz"
-    }
+    # MODIFICATION : On ne génère le dataset.json qu'en entraînement
+    if not is_inference:
+        channel_names = {str(i): f"{channel_prefix}_{i}" for i in range(num_channels)}
+        dataset_json = {
+            "channel_names": channel_names,
+            "labels": {"background": 0, "lesion": 1},
+            "numTraining": valid_subjects,
+            "file_ending": ".nii.gz"
+        }
 
-    with open(os.path.join(nnunet_raw, "dataset.json"), "w") as f:
-        json.dump(dataset_json, f, indent=4)
+        with open(os.path.join(nnunet_raw, "dataset.json"), "w") as f:
+            json.dump(dataset_json, f, indent=4)
 
     print("\n" + "="*40)
     print(f" CONVERSION TERMINÉE ! Patients valides : {valid_subjects}")
@@ -114,6 +126,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--src", default="./Base_IRM", help="Dossier source des patients IRM")
     parser.add_argument("--nnunet", default="./nnunet_data", help="Racine nnU-Net")
+    parser.add_argument("--inference", action="store_true", help="Prépare les données pour la prédiction (ignore masques, cible imagesTs)")
     args = parser.parse_args()
     
-    extract_dce_to_nnunet_flat(args.src, args.nnunet)
+    extract_dce_to_nnunet_flat(args.src, args.nnunet, is_inference=args.inference)
