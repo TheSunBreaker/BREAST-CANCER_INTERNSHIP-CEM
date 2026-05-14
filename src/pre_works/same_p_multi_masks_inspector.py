@@ -6,181 +6,97 @@ A mettre dans le même dossier que les masques FORMAT DICOM à ausculter.
 
 import os
 import pydicom
-from collections import defaultdict
-from datetime import datetime
+import numpy as np
 
-MASK_DIR = r"."
+MASK_DIR = r"./mes_masques"
 
-def safe_get(ds, key, default="UNKNOWN"):
-    return str(getattr(ds, key, default))
-
-def parse_datetime(ds):
-    date = safe_get(ds, "StructureSetDate", "19000101")
-    time = safe_get(ds, "StructureSetTime", "000000").split(".")[0]
-
-    if len(time) < 6:
-        time = time.ljust(6, "0")
-
-    try:
-        return datetime.strptime(date + time[:6], "%Y%m%d%H%M%S")
-    except:
-        return None
-
-def inspect_rtstruct(path):
-    try:
-        ds = pydicom.dcmread(path, stop_before_pixels=True, force=True)
-
-        print("\n====================================================")
-        print(f"FICHIER : {os.path.basename(path)}")
-        print("====================================================")
-
-        modality = safe_get(ds, "Modality")
-        print(f"Modalité : {modality}")
-
-        dt = parse_datetime(ds)
-        print(f"Date masque : {dt}")
-
-        print(f"SeriesInstanceUID :")
-        print(f"  {safe_get(ds, 'SeriesInstanceUID')}")
-
-        print(f"\nReferenced Series UID :")
-
-        ref_uid = "NOT_FOUND"
-
-        if hasattr(ds, "ReferencedFrameOfReferenceSequence"):
-            try:
-                study_seq = ds.ReferencedFrameOfReferenceSequence[0]
-                rt_ref_study = study_seq.RTReferencedStudySequence[0]
-                rt_ref_series = rt_ref_study.RTReferencedSeriesSequence[0]
-
-                ref_uid = rt_ref_series.SeriesInstanceUID
-            except:
-                pass
-
-        elif hasattr(ds, "ReferencedSeriesSequence"):
-            try:
-                ref_uid = ds.ReferencedSeriesSequence[0].SeriesInstanceUID
-            except:
-                pass
-
-        print(f"  {ref_uid}")
-
-        print("\n--- ROIS ---")
-
-        roi_names = {}
-
-        if hasattr(ds, "StructureSetROISequence"):
-            for roi in ds.StructureSetROISequence:
-                roi_number = roi.ROINumber
-                roi_name = safe_get(roi, "ROIName")
-
-                roi_names[roi_number] = roi_name
-
-                print(f"ROI #{roi_number} : {roi_name}")
-
-        print("\n--- CONTOURS ---")
-
-        total_contours = 0
-
-        if hasattr(ds, "ROIContourSequence"):
-            for contour in ds.ROIContourSequence:
-
-                roi_num = getattr(contour, "ReferencedROINumber", "UNKNOWN")
-                roi_name = roi_names.get(roi_num, "UNKNOWN")
-
-                nb_contours = len(getattr(contour, "ContourSequence", []))
-
-                total_contours += nb_contours
-
-                print(
-                    f"ROI {roi_name} "
-                    f"(#{roi_num}) -> {nb_contours} contours"
-                )
-
-        print(f"\nTOTAL CONTOURS : {total_contours}")
-
-        print("\n--- OBSERVATIONS ---")
-
-        if hasattr(ds, "RTROIObservationsSequence"):
-            for obs in ds.RTROIObservationsSequence:
-
-                roi_num = getattr(obs, "ReferencedROINumber", "UNKNOWN")
-                roi_name = roi_names.get(roi_num, "UNKNOWN")
-
-                interp = safe_get(obs, "RTROIInterpretedType")
-
-                print(
-                    f"ROI {roi_name} "
-                    f"(#{roi_num}) -> Type : {interp}"
-                )
-
-        return {
-            "file": path,
-            "ref_uid": ref_uid,
-            "datetime": dt,
-            "roi_names": list(roi_names.values()),
-            "total_contours": total_contours
-        }
-
-    except Exception as e:
-        print(f"\n[ERREUR] {path}")
-        print(e)
-        return None
-
-
-results = []
+def safe_get(obj, attr, default="UNKNOWN"):
+    return str(getattr(obj, attr, default))
 
 for root, _, files in os.walk(MASK_DIR):
+
     for f in files:
 
-        fullpath = os.path.join(root, f)
+        path = os.path.join(root, f)
 
         try:
-            ds = pydicom.dcmread(fullpath, stop_before_pixels=True, force=True)
+            ds = pydicom.dcmread(path, force=True)
 
-            if ds.Modality in ["RTSTRUCT", "SEG"]:
-                result = inspect_rtstruct(fullpath)
+            if ds.Modality != "SEG":
+                continue
 
-                if result:
-                    results.append(result)
+            print("\n====================================================")
+            print(f"FICHIER : {f}")
+            print("====================================================")
 
-        except:
-            continue
+            print(f"Modality : {ds.Modality}")
 
+            print("\n--- IDENTITÉ ---")
 
-print("\n\n####################################################")
-print("################### COMPARAISON ####################")
-print("####################################################")
+            print(f"Series UID :")
+            print(f"  {safe_get(ds, 'SeriesInstanceUID')}")
 
-grouped = defaultdict(list)
+            print(f"\nReferenced Series UID :")
 
-for r in results:
-    grouped[r["ref_uid"]].append(r)
+            ref_uid = "UNKNOWN"
 
-for ref_uid, group in grouped.items():
+            try:
+                ref_uid = (
+                    ds.ReferencedSeriesSequence[0]
+                    .SeriesInstanceUID
+                )
+            except:
+                pass
 
-    if len(group) < 2:
-        continue
+            print(f"  {ref_uid}")
 
-    print("\n====================================================")
-    print(f"IMAGE RÉFÉRENCÉE : {ref_uid}")
-    print(f"NOMBRE DE MASQUES : {len(group)}")
-    print("====================================================")
+            print("\n--- SEGMENTS ---")
 
-    for g in sorted(group, key=lambda x: x["datetime"] or datetime.min):
+            if hasattr(ds, "SegmentSequence"):
 
-        print(f"\nFichier : {os.path.basename(g['file'])}")
-        print(f"Date : {g['datetime']}")
-        print(f"ROIs : {g['roi_names']}")
-        print(f"Nb contours : {g['total_contours']}")
+                for seg in ds.SegmentSequence:
 
-    print("\nINTERPRÉTATION POSSIBLE :")
+                    seg_num = safe_get(seg, "SegmentNumber")
+                    seg_label = safe_get(seg, "SegmentLabel")
+                    seg_desc = safe_get(seg, "SegmentDescription")
 
-    roi_sets = [tuple(sorted(g["roi_names"])) for g in group]
+                    print(f"\nSegment #{seg_num}")
+                    print(f"Label       : {seg_label}")
+                    print(f"Description : {seg_desc}")
 
-    if len(set(roi_sets)) == 1:
-        print(" -> Même type de ROI.")
-        print(" -> Possible corrections/versioning/inter-annotateurs.")
-    else:
-        print(" -> ROIs différentes détectées.")
-        print(" -> Possible lésions multiples ou structures distinctes.")
+                    try:
+                        cat = seg.SegmentedPropertyCategoryCodeSequence[0]
+                        print(f"Category    : {safe_get(cat, 'CodeMeaning')}")
+                    except:
+                        pass
+
+                    try:
+                        typ = seg.SegmentedPropertyTypeCodeSequence[0]
+                        print(f"Type        : {safe_get(typ, 'CodeMeaning')}")
+                    except:
+                        pass
+
+            print("\n--- PIXELS / VOLUME ---")
+
+            try:
+
+                arr = ds.pixel_array
+
+                print(f"Shape : {arr.shape}")
+                print(f"Dtype : {arr.dtype}")
+
+                unique_vals = np.unique(arr)
+
+                print(f"Valeurs uniques : {unique_vals}")
+
+                nonzero = np.count_nonzero(arr)
+
+                print(f"Nb voxels segmentés : {nonzero}")
+
+            except Exception as e:
+                print(f"[ERREUR PIXELS] {e}")
+
+        except Exception as e:
+
+            print(f"\n[ERREUR LECTURE] {f}")
+            print(e)
