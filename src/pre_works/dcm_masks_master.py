@@ -124,13 +124,14 @@ def determine_mask_class(dicom_path: str) -> int:
     Analyse les métadonnées DICOM pour déterminer la classe sémantique du masque.
 
     Stratégie :
-        - Pour un SEG  : on lit SegmentSequence[0].SegmentDescription
+        - Pour un SEG  : on lit la SegmentSequence. On ignore les segments de type 
+          "Background" pour trouver la vraie description de la lésion.
         - Pour un RTSTRUCT : on lit StructureSetROISequence[0].ROIName
         - On cherche les mots-clés ganglion dans la description (insensible à la casse)
 
     Retourne :
         1 → Tumeur / Masse principale (classe par défaut si rien ne correspond)
-        2 → Ganglion lymphatique / Lymph Node
+        2 → Ganglion lymphatique / Lymph Node (Si SEPARATE_LYMPH_NODE_CLASS = True)
 
     Note :
         Cette heuristique est volontairement simple. Pour des datasets avec des
@@ -144,9 +145,19 @@ def determine_mask_class(dicom_path: str) -> int:
         desc = ""
 
         if modality == "SEG":
-            # La description de la structure annotée est dans SegmentSequence
-            if hasattr(ds, "SegmentSequence") and len(ds.SegmentSequence) > 0:
-                desc = getattr(ds.SegmentSequence[0], "SegmentDescription", "")
+            # --- CORRECTION DU BUG "BACKGROUND" ---
+            # Un SEG peut contenir plusieurs "Segments" internes. Parfois, le logiciel 
+            # d'annotation crée un Segment #1 nommé "Background" et un Segment #2 
+            # nommé "Tumor". Il faut chercher le premier segment qui N'EST PAS un background.
+            if hasattr(ds, "SegmentSequence"):
+                for seg in ds.SegmentSequence:
+                    seg_label = str(getattr(seg, "SegmentLabel", "")).upper()
+                    seg_desc  = str(getattr(seg, "SegmentDescription", "")).upper()
+                    
+                    if "BACKGROUND" not in seg_label and "BACKGROUND" not in seg_desc:
+                        # On concatène pour maximiser les chances de trouver le mot-clé
+                        desc = seg_desc + " " + seg_label
+                        break # On a trouvé la vraie lésion, on arrête de chercher !
 
         elif modality == "RTSTRUCT":
             # Pour un RTSTRUCT, le nom de la ROI est dans StructureSetROISequence
@@ -156,17 +167,17 @@ def determine_mask_class(dicom_path: str) -> int:
         # Comparaison insensible à la casse avec les mots-clés ganglion
         desc_upper = str(desc).upper()
         if any(kw in desc_upper for kw in NODE_KEYWORDS):
-            # C'est un ganglion. Regardons ce que dicte la configuration globale :
+            # C'est un ganglion. Regardons ce que dictent les paramètres globaux :
             if SEPARATE_LYMPH_NODE_CLASS:
-                return 2  # Séparé : Classe 2
+                return 2  # Ganglion lymphatique séparé
             else:
-                return 1  # Fusionné : Classe 1 (Lésion globale)
+                return 1  # Lésion globale (Ganglion et tumeur partagent la classe 1)
+
         return 1  # Fallback : tumeur principale
 
     except Exception:
         # En cas d'erreur de lecture, on fait confiance au fallback tumeur
         return 1
-
 
 # ==============================================================================
 # SECTION 3 — MODULE DE CONVERSION TEMPORAIRE (PIXELS)
@@ -200,6 +211,8 @@ def convert_to_temp_nifti(
     Binarisation :
         Le NIfTI produit est toujours binarisé (0/1) pour homogénéiser la
         comparaison Dice quel que soit le système de contouring d'origine.
+        Les segments explicitement étiquetés "Background" sont ignorés pour 
+        éviter les faux-positifs "full-body".
     """
     try:
         ds = pydicom.dcmread(dcm_path, stop_before_pixels=True, force=True)
@@ -216,10 +229,23 @@ def convert_to_temp_nifti(
             result = reader.read(pydicom.dcmread(dcm_path))
 
             arr = sitk.GetArrayFromImage(result.image)
-            # Binarisation stricte : tout voxel > 0 devient 1
-            arr = (arr > 0).astype(np.uint8)
+            
+            # --- CORRECTION DU BUG "BACKGROUND" ---
+            # On crée une grille vide de la même taille que l'image
+            clean_arr = np.zeros_like(arr, dtype=np.uint8)
+            
+            # On inspecte chaque segment encodé par le logiciel
+            # (Certains logiciels comme 3D Slicer encodent un segment entier pour le "fond")
+            for seg_val, seg_info in result.segment_infos.items():
+                label = str(getattr(seg_info, "SegmentLabel", "")).upper()
+                desc  = str(getattr(seg_info, "SegmentDescription", "")).upper()
+                
+                # Si le segment N'EST PAS du "Background", on le garde et on l'active (1)
+                # Cela protège contre les masques qui couvrent 100% de l'image.
+                if "BACKGROUND" not in label and "BACKGROUND" not in desc:
+                    clean_arr[arr == seg_val] = 1
 
-            clean_img = sitk.GetImageFromArray(arr)
+            clean_img = sitk.GetImageFromArray(clean_arr)
             # On préserve les métadonnées spatiales (origine, spacing, directions)
             # pour que le masque s'aligne correctement sur l'image de référence
             clean_img.CopyInformation(result.image)
