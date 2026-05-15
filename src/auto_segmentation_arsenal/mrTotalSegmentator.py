@@ -52,8 +52,8 @@ except ImportError:
 def run_totalseg_api(ct_file: Path, output_mask: Path):
     """Lance TotalSegmentator via l'API Python native (librairie locale)."""
     totalsegmentator(
-        input_path=str(ct_file),
-        output_path=str(output_mask),
+        input=str(ct_file),
+        output=str(output_mask),
         task="total", 
         roi_subset=["breast_female_left", "breast_female_right"], 
         ml=True 
@@ -121,7 +121,7 @@ def main():
     )
 
     # --- OPTIONS MATÉRIELLES ET DE FLUX ---
-    parser.add_argument("--device", default="gpu:0", help="Matériel: gpu:0, gpu:1... ou cpu (Défaut: gpu:0)")
+    parser.add_argument("--device", default="gpu", help="Matériel: gpu:0, gpu:1... ou cpu (Défaut: gpu:0)")
     parser.add_argument("--fast", action="store_true", help="Mode rapide basse résolution (Très recommandé si CPU)")
     parser.add_argument("--skip-existing", action="store_true", default=True, help="Passe les patients déjà segmentés (Activé par défaut)")
     
