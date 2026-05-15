@@ -33,6 +33,7 @@ import argparse
 from pathlib import Path
 import SimpleITK as sitk
 import numpy as np
+from utils.spatial_standardizer import resample_to_reference
 
 # ============================================================
 # UTILITAIRES SPATIAUX
@@ -44,27 +45,6 @@ def voxel_volume_ml(img: sitk.Image) -> float:
     """
     sx, sy, sz = img.GetSpacing()
     return (sx * sy * sz) / 1000.0
-
-def resample_to_pet(moving_img: sitk.Image, pet_img: sitk.Image, is_mask: bool = False) -> sitk.Image:
-    """
-    Recale une image (CT ou Masque) sur la grille spatiale exacte du PET.
-    
-    MODIFICATION CRITIQUE :
-    - Pour un masque (0 ou 1) -> Interpolation NearestNeighbor, hors-champ = 0
-    - Pour le CT (Unités Hounsfield) -> Interpolation Linéaire, hors-champ = -1000 (Air)
-    """
-    resampler = sitk.ResampleImageFilter()
-    resampler.SetReferenceImage(pet_img)
-    
-    if is_mask:
-        resampler.SetInterpolator(sitk.sitkNearestNeighbor)
-        resampler.SetDefaultPixelValue(0)
-    else:
-        resampler.SetInterpolator(sitk.sitkLinear)
-        resampler.SetDefaultPixelValue(-1000.0) # -1000 HU = Air. Très important !
-        
-    resampler.SetTransform(sitk.Transform())
-    return resampler.Execute(moving_img)
 
 # ============================================================
 # FILTRES ANATOMIQUES (CT-BASED)
@@ -190,9 +170,9 @@ def advanced_pet_ct_pipeline(pet_img: sitk.Image, ct_img: sitk.Image, breast_mas
                              rel_thr=0.45, seed_frac=0.3, min_volume_ml=0.5) -> sitk.Image:
     """Combine toutes les étapes de manière orchestrée."""
     
-    # 1. Recalage sur le PET
-    ct_pet = resample_to_pet(ct_img, pet_img, is_mask=False)
-    breast_pet = resample_to_pet(breast_mask, pet_img, is_mask=True)
+    # 1. Recalage sur le PET en utilisant le Standardiseur Global
+    ct_pet = resample_to_reference(moving_img=ct_img, ref_img=pet_img, is_mask=False, pad_value=-1000.0)
+    breast_pet = resample_to_reference(moving_img=breast_mask, ref_img=pet_img, is_mask=True, pad_value=0.0)
 
     # 2. Masques dérivés du CT
     soft_mask = create_soft_tissue_mask(ct_pet)
