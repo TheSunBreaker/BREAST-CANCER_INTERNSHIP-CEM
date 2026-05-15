@@ -268,7 +268,7 @@ def main():
     elif args.action == "predict":
         if not args.input or not args.output:
             parser.error("L'action 'predict' requiert impérativement les drapeaux -i (--input) et -o (--output).")
-        do_predict(args.dataset, args.config, args.fold, args.input, args.output)
+        do_predict(args.dataset, args.config, args.fold, args.input, args.output, args.trainer)
 
     elif args.action == "evaluate":
         if not args.ground_truth or not args.predictions:
