@@ -46,28 +46,40 @@ from typing import List, Tuple, Dict, Optional
 from monai.metrics import DiceMetric, HausdorffDistanceMetric
 
 
+def get_patient_id(filename: str) -> str:
+    """Extrait l'ID du patient en nettoyant les extensions et suffixes connus."""
+    clean = filename.replace(".nii.gz", "").replace(".nii", "")
+    # Retire le suffixe de l'auto-segmentateur pour matcher le format nnU-Net
+    clean = clean.replace("_auto_tumor", "")
+    return clean
+
 def list_pairs(dir_a: str, dir_b: str, exts: Tuple[str, ...] = (".nii.gz", ".nii")) -> List[Tuple[str, str, str]]:
     """
-    Identifie les fichiers correspondants entre le dossier GT (A) et Prédiction (B).
-    Génère des alertes si des fichiers sont orphelins dans l'un des dossiers.
+    Identifie les fichiers correspondants entre le dossier GT (A) et Prédiction (B)
+    en se basant sur l'ID du patient, indépendamment des suffixes de fichiers.
     """
-    A = {f: os.path.join(dir_a, f) for f in os.listdir(dir_a) if f.endswith(exts)}
-    B = {f: os.path.join(dir_b, f) for f in os.listdir(dir_b) if f.endswith(exts)}
+    A_paths = {f: os.path.join(dir_a, f) for f in os.listdir(dir_a) if f.endswith(exts)}
+    B_paths = {f: os.path.join(dir_b, f) for f in os.listdir(dir_b) if f.endswith(exts)}
     
-    common = sorted(set(A.keys()) & set(B.keys()))
+    # Création de dictionnaires indexés par l'ID propre (ex: "QIN-BREAST-01-0001")
+    A_dict = {get_patient_id(f): path for f, path in A_paths.items()}
+    B_dict = {get_patient_id(f): path for f, path in B_paths.items()}
+    
+    common_ids = sorted(set(A_dict.keys()) & set(B_dict.keys()))
 
-    if not common:
-        raise ValueError("ERREUR FATALE : Aucun nom de fichier commun entre les deux dossiers.")
+    if not common_ids:
+        raise ValueError("ERREUR FATALE : Aucun patient commun trouvé entre les deux dossiers.")
 
-    missing_in_b = sorted(set(A.keys()) - set(B.keys()))
-    missing_in_a = sorted(set(B.keys()) - set(A.keys()))
+    missing_in_b = sorted(set(A_dict.keys()) - set(B_dict.keys()))
+    missing_in_a = sorted(set(B_dict.keys()) - set(A_dict.keys()))
     
     if missing_in_b:
-        print(f"[ALERTE] {len(missing_in_b)} fichier(s) présent(s) uniquement dans Ground Truth (ignorés). Ex: {missing_in_b[:3]}")
+        print(f"[ALERTE] {len(missing_in_b)} patient(s) uniquement dans GT (ignorés). Ex: {missing_in_b[:3]}")
     if missing_in_a:
-        print(f"[ALERTE] {len(missing_in_a)} fichier(s) présent(s) uniquement dans Prédictions (ignorés). Ex: {missing_in_a[:3]}")
+        print(f"[ALERTE] {len(missing_in_a)} patient(s) uniquement dans Prédictions (ignorés). Ex: {missing_in_a[:3]}")
 
-    return [(fn, A[fn], B[fn]) for fn in common]
+    # Retourne une liste de tuples : (nom_affichage, chemin_A, chemin_B)
+    return [(pid, A_dict[pid], B_dict[pid]) for pid in common_ids]
 
 
 def load_mask_as_tensor(path: str, binarize_thr: float = 0.0) -> Tuple[torch.Tensor, Tuple[float, float, float]]:
