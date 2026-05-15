@@ -263,7 +263,7 @@ def main():
         do_preprocess(args.dataset)
         
     elif args.action == "train":
-        do_train(args.dataset, args.config, args.fold, args.resume, args.pretrained_weights)
+        do_train(args.dataset, args.config, args.fold, args.resume, args.pretrained_weights, args.trainer)
         
     elif args.action == "predict":
         if not args.input or not args.output:
