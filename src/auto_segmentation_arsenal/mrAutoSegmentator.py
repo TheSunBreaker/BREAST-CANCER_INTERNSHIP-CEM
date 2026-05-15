@@ -166,33 +166,41 @@ def apply_ct_constraints(tumor_mask: sitk.Image, soft_mask: sitk.Image, bone_mas
 # PIPELINE MÉTIER
 # ============================================================
 
+# ============================================================
+# PIPELINE MÉTIER
+# ============================================================
+
 def advanced_pet_ct_pipeline(pet_img: sitk.Image, ct_img: sitk.Image, breast_mask: sitk.Image,
-                             rel_thr=0.45, seed_frac=0.3, min_volume_ml=0.5) -> sitk.Image:
+                             rel_thr=0.45, seed_frac=0.3, min_volume_ml=0.5, use_ct=False) -> sitk.Image:
     """Combine toutes les étapes de manière orchestrée."""
     
-    # 1. Recalage sur le PET en utilisant le Standardiseur Global
-    ct_pet = resample_to_reference(moving_img=ct_img, ref_img=pet_img, is_mask=False, pad_value=-1000.0)
+    # 1. Recalage du masque du sein sur le PET
     breast_pet = resample_to_reference(moving_img=breast_mask, ref_img=pet_img, is_mask=True, pad_value=0.0)
 
-    # 2. Masques dérivés du CT
-    soft_mask = create_soft_tissue_mask(ct_pet)
-    bone_mask = remove_high_density_regions(ct_pet)
-
-    # On restreint le masque des tissus mous à l'intérieur du sein uniquement
-    soft_np = sitk.GetArrayFromImage(soft_mask)
-    breast_np = sitk.GetArrayFromImage(breast_pet)
-    soft_np = soft_np & (breast_np > 0)
-    
-    soft_mask = sitk.GetImageFromArray(soft_np.astype(np.uint8))
-    soft_mask.CopyInformation(ct_pet)
-
-    # 3. Segmentation PET dans le sein
+    # 2. Segmentation PET primaire dans le sein
     tumor_mask = pet_local_peak_segmentation(pet_img, breast_pet, rel_thr=rel_thr, seed_frac=seed_frac)
 
-    # 4. Contraintes CT (Retrait des os)
-    tumor_mask = apply_ct_constraints(tumor_mask, soft_mask, bone_mask)
+    # 3. Application conditionnelle des contraintes CT
+    if use_ct and ct_img is not None:
+        # Recalage du CT sur le PET
+        ct_pet = resample_to_reference(moving_img=ct_img, ref_img=pet_img, is_mask=False, pad_value=-1000.0)
 
-    # 5. Nettoyage
+        # Création des masques dérivés du CT
+        soft_mask = create_soft_tissue_mask(ct_pet)
+        bone_mask = remove_high_density_regions(ct_pet)
+
+        # Restriction aux tissus mous à l'intérieur du sein
+        soft_np = sitk.GetArrayFromImage(soft_mask)
+        breast_np = sitk.GetArrayFromImage(breast_pet)
+        soft_np = soft_np & (breast_np > 0)
+        
+        soft_mask = sitk.GetImageFromArray(soft_np.astype(np.uint8))
+        soft_mask.CopyInformation(ct_pet)
+
+        # Application des contraintes
+        tumor_mask = apply_ct_constraints(tumor_mask, soft_mask, bone_mask)
+
+    # 4. Nettoyage final
     tumor_mask = remove_small_components(tumor_mask, min_volume_ml)
 
     return tumor_mask
@@ -214,6 +222,7 @@ def main():
     parser.add_argument("--seed-frac", type=float, default=0.30, help="Fraction du max global pour le seeding (Défaut: 30%)")
     parser.add_argument("--min-vol", type=float, default=0.5, help="Volume minimal en mL (Défaut: 0.5 mL)")
     parser.add_argument("--overwrite", action="store_true", help="Écrase les résultats existants")
+    parser.add_argument("--use-ct", action="store_true", help="Active les contraintes anatomiques CT (Désactivé par défaut)")
     
     args = parser.parse_args()
 
@@ -241,12 +250,16 @@ def main():
             print(f"[WARN] {patient_id} : Masque sein introuvable, patient ignoré.")
             continue
 
-        # 3. Recherche du CT
-        ct_files = list(imgs_dir.glob("*_TDM_*.nii.gz"))
-        if not ct_files:
-            print(f"[WARN] {patient_id} : Scanner CT introuvable dans Baseline.")
-            continue
-        ct_path = ct_files[0]
+        # 3. Recherche du CT (Conditionnelle)
+        ct_path = None
+        ct_img = None
+        if args.use_ct:
+            ct_files = list(imgs_dir.glob("*_TDM_*.nii.gz"))
+            if not ct_files:
+                print(f"[WARN] {patient_id} : Scanner CT introuvable dans Baseline. Ignoré.")
+                continue
+            ct_path = ct_files[0]
+            ct_img = sitk.ReadImage(str(ct_path), sitk.sitkFloat32)
 
         # 4. Recherche du PET (On privilégie le SUV, sinon on prend le RAW en fallback)
         pet_files = list(imgs_dir.glob("*_TEP_*_SUV.nii.gz"))
@@ -255,7 +268,7 @@ def main():
             if not pet_files:
                 print(f"[WARN] {patient_id} : PET introuvable dans Baseline.")
                 continue
-            print(f"  [INFO] Utilisation du PET Brut (RAW) pour {patient_id}")
+            print(f"  [INFO] Impossible de trouver de PET SUV pour le patient : {patient_id}. On utilisera alors du PET RAW à la place.")
         else:
             print(f"  [INFO] Utilisation du PET SUV pour {patient_id}")
             
@@ -274,7 +287,8 @@ def main():
                 pet_img, ct_img, breast_mask,
                 rel_thr=args.rel_thr,
                 seed_frac=args.seed_frac,
-                min_volume_ml=args.min_vol
+                min_volume_ml=args.min_vol,
+                use_ct=args.use_ct
             )
             
             sitk.WriteImage(final_tumor, str(out_mask_path))
