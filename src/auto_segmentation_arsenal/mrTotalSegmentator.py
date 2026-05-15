@@ -104,7 +104,9 @@ def run_totalseg_cli(ct_file: Path, output_mask: Path, device: str, fast: bool, 
     if fast:
         cmd.insert(4, "--fast")
 
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    subprocess.run(cmd, check=True,
+                   #stdout=subprocess.DEVNULL,
+                   stderr=subprocess.STDOUT)
     
     merge_breast_masks_sitk(tmp_dir, output_mask)
 
