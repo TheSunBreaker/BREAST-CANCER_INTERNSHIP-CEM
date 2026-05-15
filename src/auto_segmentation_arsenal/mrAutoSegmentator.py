@@ -280,7 +280,6 @@ def main():
         print(f"[RUN ] {patient_id} en cours de segmentation...")
         try:
             pet_img = sitk.ReadImage(str(pet_path), sitk.sitkFloat32)
-            ct_img = sitk.ReadImage(str(ct_path), sitk.sitkFloat32)
             breast_mask = sitk.ReadImage(str(breast_mask_path), sitk.sitkUInt8)
             
             final_tumor = advanced_pet_ct_pipeline(
