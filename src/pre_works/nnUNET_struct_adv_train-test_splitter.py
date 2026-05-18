@@ -81,9 +81,9 @@ def main():
 
     # 2. Identification du VRAI total (Train + Test existant)
     train_patients = sorted([f.name.replace(".nii.gz", "") for f in labelsTr.glob("*.nii.gz")])
-    test_patients_existants = sorted([f.name.replace(".nii.gz", "") for f in labelsTs.glob("*.nii.gz")])
+    test_patients_a_deplacer_existants = sorted([f.name.replace(".nii.gz", "") for f in labelsTs.glob("*.nii.gz")])
     
-    all_patients_ever = train_patients + test_patients_existants
+    all_patients_ever = train_patients + test_patients_a_deplacer_existants
     total_patients = len(all_patients_ever)
     
     if total_patients == 0:
@@ -97,21 +97,21 @@ def main():
     if safe_ratio > 0 and target_test_count == 0:
         target_test_count = 1
 
-    print(f"\nAnalyse du dataset : {total_patients} patients au total (Train: {len(train_patients)} | Test: {len(test_patients_existants)}).")
+    print(f"\nAnalyse du dataset : {total_patients} patients au total (Train: {len(train_patients)} | Test: {len(test_patients_a_deplacer_existants)}).")
     print(f"Objectif global pour le Test ({safe_ratio*100}%) : {target_test_count} patients.")
 
     # --- LE BOUCLIER DE SÉCURITÉ ---
-    if len(test_patients_existants) >= target_test_count:
-        print(f"\n🛡️ SÉCURITÉ ACTIVÉE : Le dossier de test contient déjà {len(test_patients_existants)} patients.")
+    if len(test_patients_a_deplacer_existants) >= target_test_count:
+        print(f"\n🛡️ SÉCURITÉ ACTIVÉE : Le dossier de test contient déjà {len(test_patients_a_deplacer_existants)} patients.")
         print("L'objectif est déjà atteint ou dépassé. Le script s'arrête pour éviter de vider l'entraînement.")
         return
         
     # S'il en manque, on calcule combien on doit encore en déplacer
-    needed_count = target_test_count - len(test_patients_existants)
+    needed_count = target_test_count - len(test_patients_a_deplacer_existants)
     print(f"Ajustement : Il manque {needed_count} patient(s) à déplacer pour atteindre le ratio.")
 
     # 4. Traitement des Préférences (On cherche uniquement parmi ceux qui sont encore dans Train)
-    test_patients_a_deplacer = []
+    test_patients_a_deplacer_a_deplacer = []
     
     for p in args.pref:
         patient_to_add = None
@@ -126,32 +126,32 @@ def main():
             patient_to_add = p
                 
         # On vérifie s'il est valide, et SURTOUT s'il n'est pas DÉJÀ dans le test
-        if patient_to_add in test_patients_existants:
+        if patient_to_add in test_patients_a_deplacer_existants:
             print(f"  [Info] La préférence {patient_to_add} est déjà dans le dossier de test.")
-        elif patient_to_add in train_patients and patient_to_add not in test_patients_a_deplacer:
-            if len(test_patients_a_deplacer) < needed_count:
-                test_patients_a_deplacer.append(patient_to_add)
+        elif patient_to_add in train_patients and patient_to_add not in test_patients_a_deplacer_a_deplacer:
+            if len(test_patients_a_deplacer_a_deplacer) < needed_count:
+                test_patients_a_deplacer_a_deplacer.append(patient_to_add)
                 print(f"Préférence honorée : {patient_to_add} sélectionné pour le déplacement.")
             else:
                 print(f"  [Avertissement] Quota manquant atteint, préférence {patient_to_add} ignorée.")
 
     # 5. Complétion aléatoire si le quota manquant n'est pas atteint
-    remaining_in_train = [p for p in train_patients if p not in test_patients_a_deplacer]
-    still_needed = needed_count - len(test_patients_a_deplacer)
+    remaining_in_train = [p for p in train_patients if p not in test_patients_a_deplacer_a_deplacer]
+    still_needed = needed_count - len(test_patients_a_deplacer_a_deplacer)
     
     if still_needed > 0:
         random.seed(args.seed)
         random_selection = random.sample(remaining_in_train, still_needed)
-        test_patients_a_deplacer.extend(random_selection)
+        test_patients_a_deplacer_a_deplacer.extend(random_selection)
         print(f"  Complétion aléatoire : {still_needed} patient(s) supplémentaire(s) sélectionné(s).")
 
-    test_patients_a_deplacer.sort()
+    test_patients_a_deplacer_a_deplacer.sort()
     
     # 6. DÉPLACEMENT PHYSIQUE DES FICHIERS
     print("\nDéplacement des fichiers en cours...")
     
     moved_count = 0
-    for patient_id in test_patients:
+    for patient_id in test_patients_a_deplacer:
         # 6.1 Déplacement du Label (La Vérité Terrain)
         lbl_src = labelsTr / f"{patient_id}.nii.gz"
         lbl_dst = labelsTs / f"{patient_id}.nii.gz"
@@ -193,7 +193,7 @@ def main():
     print(f"  Patients en Test (Test)          : {moved_count}")
     print("="*50)
     print("  Liste des patients isolés pour le test :")
-    for p in test_patients:
+    for p in test_patients_a_deplacer:
         print(f"    - {p}")
     print("="*50 + "\n")
 
