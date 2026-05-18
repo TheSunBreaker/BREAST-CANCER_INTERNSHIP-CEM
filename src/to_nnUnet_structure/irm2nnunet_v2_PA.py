@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 r"""
-Orchestrateur IRM DCE vers nnU-Net V2 - V2 (Sélecteur Physiologique Multicentrique).
+Orchestrateur IRM DCE vers nnU-Net V2 - V3 (Jump-Anchored Time-Matching).
 
 =============================================================================
-NOUVEAUTÉS V2 :
+NOUVEAUTÉS V3 :
 - Time-Matching Absolu : Sélectionne les phases NIfTI non pas par leur index (0,1,2,3),
   mais par leur TEMPS BIOLOGIQUE absolu post-injection (ex: 0s, 90s, 180s, 360s).
 - Modularité des Canaux : Supporte de 1 à 4 canaux via le flag `--num_channels`.
@@ -12,6 +12,16 @@ NOUVEAUTÉS V2 :
     -> MAMAMIA   : Parse le fichier CSV officiel de MAMA-MIA pour lire 'acquisition_times'.
     -> BLIND     : Mode survie si aucune métadonnée n'est disponible (heuristique).
 =============================================================================
+
+=============================================================================
+LA STRATÉGIE TEMPORELLE ABSOLUE :
+1. Détecte le "Grand Saut" (Injection du produit de contraste).
+2. T0 (Baseline) = L'image juste avant le saut.
+3. T1 (Wash-in) = L'image juste après le saut (Ancrage Temporel T_inj).
+4. T2, T3... = Images les plus proches de (T_inj + 90s), (T_inj + 180s), etc.
+=============================================================================
+
+
 
 Pré-requis :
 Les NIfTI doivent être triés par ordre chronologique alphabétique dans le dossier 'imgs/'.
@@ -46,12 +56,20 @@ def get_target_times(num_channels: int) -> list:
         targets.append(360.0) # Canal 3 : Wash-out tardif
     return targets
 
+# ============================================================================
+# MODULE DE SÉLECTION TEMPORELLE (JUMP-ANCHORED TIME-MATCHING)
+# Ce module garantit que nnU-Net reçoit toujours les mêmes fenêtres biologiques,
+# indépendamment de la machine IRM, en s'ancrant sur le moment de l'injection.
+# ============================================================================
+
 def parse_ingesteur_log(log_path: str) -> list:
     """
-    Reconstruit la frise chronologique (timeline) en lisant le fichier .txt de l'Ingesteur V6.
+    Reconstruit la frise chronologique absolue (timeline) depuis le log de l'Ingesteur V6.
+    
+    Exemple de sortie : [0.0, 17.0, 34.0, 70.0, 87.0...]
     """
     timeline = [0.0]
-    if not os.path.exists(log_path):
+    if not os.path.exists(log_path): 
         return []
         
     try:
@@ -63,21 +81,23 @@ def parse_ingesteur_log(log_path: str) -> list:
                     parts = ligne.split(":")
                     if len(parts) == 2:
                         ecart_sec = float(parts[1].replace("s", "").strip())
-                        # Le temps actuel est le temps précédent + l'écart
+                        # On additionne l'écart au temps précédent pour avoir le temps absolu
                         timeline.append(timeline[-1] + ecart_sec)
         return timeline
     except Exception as e:
-        print(f"    [ATTENTION] Échec de la lecture du log Ingesteur : {e}")
+        print(f"    [ATTENTION] Échec lecture du log temporel : {e}")
         return []
+
 
 def load_mamamia_database(csv_path: str) -> dict:
     """
-    Parse le fichier CSV de MAMA-MIA pour extraire les listes de temps.
-    Retourne un dict: {'QIN-BREAST-01-0014': [0.0, 165.0, 288.0, 411.0], ...}
+    Parse le CSV externe (ex: MAMA-MIA) pour extraire la colonne 'acquisition_times'.
+    
+    Retourne un dictionnaire liant le patient à sa timeline:
+    {'QIN-01': [0.0, 584.0, 714.0], 'QIN-02': [0.0, 165.0, 288.0]}
     """
     db = {}
-    if not csv_path or not os.path.exists(csv_path):
-        print(f"[ERREUR] Fichier CSV MAMA-MIA introuvable : {csv_path}")
+    if not csv_path or not os.path.exists(csv_path): 
         return db
         
     try:
@@ -88,45 +108,71 @@ def load_mamamia_database(csv_path: str) -> dict:
                 times_str = row.get("acquisition_times", "").strip()
                 
                 if pid and times_str:
-                    try:
-                        # Convertit la string "[0, 165, ...]" en vraie liste Python
-                        time_list = ast.literal_eval(times_str)
-                        db[pid] = [float(t) for t in time_list]
-                    except Exception:
+                    try: 
+                        # ast.literal_eval transforme la string "[0, 165]" en vraie liste Python
+                        db[pid] = [float(t) for t in ast.literal_eval(times_str)]
+                    except: 
                         pass
     except Exception as e:
-        print(f"[ERREUR] Échec du parsing du CSV MAMA-MIA : {e}")
+        print(f"    [ERREUR CSV] Impossible de lire {csv_path}: {e}")
         
-    print(f" -> Base MAMA-MIA chargée en mémoire ({len(db)} patients avec timeline).")
     return db
 
-def select_best_dce_phases(timeline: list, num_channels: int, nb_files_available: int) -> list:
+def select_best_dce_phases_jump_anchored(timeline: list, num_channels: int, nb_files_available: int) -> list:
     """
-    Le cœur de l'intelligence artificielle du routage.
-    Fait correspondre les images disponibles aux temps cibles idéaux.
-    """
-    # Si la timeline est vide ou cassée, on bascule en mode BLIND heuristique
-    if not timeline or len(timeline) == 0:
-        print("    [MODE BLIND ACTIVÉ] Aucune métadonnée temporelle. Sélection à l'aveugle.")
-        # On prend le premier, le dernier, et on répartit au milieu
-        if nb_files_available <= num_channels:
-            return list(range(nb_files_available)) + [nb_files_available-1] * (num_channels - nb_files_available)
-        else:
-            return [int(i * (nb_files_available - 1) / (num_channels - 1)) for i in range(num_channels)]
-
-    targets = get_target_times(num_channels)
-    selected_indices = []
+    L'Algorithme Hybride (Le "Grand Saut" + Cohérence Temporelle Absolue).
     
-    # Sécurité : On limite la recherche aux index physiquement présents sur le disque
+    Logique biologique :
+    1. Trouve le plus grand écart de temps (qui correspond au moment de l'injection).
+    2. T0 (Baseline sans contraste) = L'image juste AVANT ce saut.
+    3. T1 (Wash-in) = L'image juste APRÈS ce saut (Ancrage T_inj).
+    4. T_X (Plateau/Wash-out) = Les images les plus proches de (T_inj + 90s), (T_inj + 180s).
+    """
+    # Fallback de sécurité : Si on n'a pas de métadonnées ou une seule image
+    if not timeline or len(timeline) < 2:
+        # On prend bêtement les premières images disponibles pour ne pas crasher
+        return [min(i, nb_files_available-1) for i in range(num_channels)]
+
+    # Sécurité : On s'assure de ne pas chercher des index au-delà des fichiers réellement sur le disque
     max_idx = min(len(timeline), nb_files_available)
     valid_timeline = np.array(timeline[:max_idx])
     
-    for t_cible in targets:
-        # np.argmin trouve l'index où la différence absolue est minimale
-        # Ex: si cible = 90s, et valid_timeline = [0, 85, 170], il choisira l'index 1 (85s)
-        best_idx = np.argmin(np.abs(valid_timeline - t_cible))
-        selected_indices.append(int(best_idx))
+    # --- 1. DÉTECTION DU SAUT (INJECTION) ---
+    # np.diff calcule l'écart entre chaque élément consécutif
+    diffs = np.diff(valid_timeline)
+    # np.argmax trouve l'index du plus grand écart
+    jump_idx_before = int(np.argmax(diffs))
+    jump_idx_after = jump_idx_before + 1
+    
+    # L'heure exacte (en secondes depuis le début de l'examen) où le contraste arrive
+    t_injection = valid_timeline[jump_idx_after]
+
+    selected_indices = []
+    
+    # --- CANAL 0 : BASELINE (Image sans contraste) ---
+    selected_indices.append(jump_idx_before)
+    
+    # --- CANAL 1 : WASH-IN IMMEDIAT (Si on a demandé au moins 2 canaux) ---
+    if num_channels >= 2:
+        selected_indices.append(jump_idx_after)
         
+    # --- CANAUX SUIVANTS : CIBLES CINÉTIQUES POST-INJECTION ---
+    # Cibles standards pour le cancer du sein : 90s (Plateau), 180s (Wash-out précoce)
+    target_deltas_post_inj = [90.0, 180.0, 360.0] 
+    
+    for i in range(2, num_channels):
+        # On calcule le temps absolu visé
+        cible_absolue = t_injection + target_deltas_post_inj[i - 2]
+        
+        # On cherche l'image la plus proche de cette cible, MAIS uniquement parmi les images 
+        # situées APRÈS l'injection (pour éviter que l'algo ne recule dans le temps)
+        temps_futurs = valid_timeline[jump_idx_after:]
+        best_future_idx = int(np.argmin(np.abs(temps_futurs - cible_absolue)))
+        
+        # On replace l'index relatif dans le repère global de la liste complète
+        vrai_index = jump_idx_after + best_future_idx
+        selected_indices.append(vrai_index)
+
     return selected_indices
 
 # ============================================================================
@@ -167,6 +213,11 @@ def extract_dce_to_nnunet_flat(
 
     valid_subjects = 0
 
+    # === NOUVEAU : Chargement de la base externe si demandée ===
+    mamamia_db = {}
+    if mode == "MAMAMIA" and csv_path:
+        mamamia_db = load_mamamia_database(csv_path)
+
     for subj in subjects:
         subj_path = os.path.join(subjects_dir, subj)
         imgs_dir = os.path.join(subj_path, "imgs") # On pointe toujours vers la Baseline par défaut !
@@ -184,34 +235,33 @@ def extract_dce_to_nnunet_flat(
         if nb_fichiers_dispos == 0:
             continue
 
-        # --- NOUVEAUTÉ : GÉNÉRATION DE LA TIMELINE ---
-        print(f"[INFO] Traitement patient : {subj} (Fichiers trouvés: {nb_fichiers_dispos})")
+        print(f"[INFO] Traitement patient : {subj} (Fichiers dispos: {nb_fichiers_dispos})")
+
+        # === NOUVEAU : GÉNÉRATION DE LA TIMELINE ===
         timeline = []
-        
         if mode == "INGESTEUR":
             log_path = os.path.join(imgs_dir, "DCE_temporal_log.txt")
             timeline = parse_ingesteur_log(log_path)
-            
         elif mode == "MAMAMIA":
-            # On essaie de faire matcher le nom de dossier avec le patient_id du CSV
             timeline = mamamia_db.get(subj, [])
             if not timeline:
-                print(f"    [ALERTE] Patient {subj} absent du CSV MAMA-MIA. Bascule en BLIND.")
+                print(f"    [ALERTE] Patient {subj} absent du CSV. Bascule en mode Aveugle.")
 
-        # --- SÉLECTION PHYSIOLOGIQUE DES PHASES ---
-        selected_indices = select_best_dce_phases(timeline, num_channels, nb_fichiers_dispos)
+        # === NOUVEAU : SÉLECTION PHYSIOLOGIQUE DES PHASES ===
+        selected_indices = select_best_dce_phases_jump_anchored(timeline, num_channels, nb_fichiers_dispos)
         
-        # Log visuel pour vérifier le comportement de l'IA de sélection
+        # Affichage pour le suivi console
         temps_reels = [f"{timeline[i]}s" if i < len(timeline) else "N/A" for i in selected_indices]
-        print(f"    -> Phases retenues (Index) : {selected_indices}")
-        print(f"    -> Temps réels correspondants : {temps_reels}")
+        print(f"    -> Index choisis : {selected_indices}")
+        print(f"    -> Temps réels   : {temps_reels}")
         
-        # On extrait physiquement les chemins des fichiers choisis
+        # On remplace la liste totale par notre sélection stricte
         phases_selectionnees_paths = [fichiers_images[idx] for idx in selected_indices]
 
         # --- ÉTAPE 1 : Alignement inter-phases ---
-        ref_phase_path = phases_selectionnees_paths[0] # La T0 est toujours la référence absolue
-        aligned_phases_paths = [ref_phase_path] 
+        # ATTENTION : Remplacer `fichiers_images[0]` par `phases_selectionnees_paths[0]`
+        ref_phase_path = phases_selectionnees_paths[0] 
+        aligned_phases_paths = [ref_phase_path]
         
         tmp_dir = os.path.join(subj_path, "tmp_aligned")
         os.makedirs(tmp_dir, exist_ok=True)
@@ -275,28 +325,24 @@ def extract_dce_to_nnunet_flat(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Orchestrateur IRM DCE Physiologique vers nnU-Net.")
+    parser.add_argument("--src", default="./Base_IRM", help="Dossier source des patients IRM")
+    parser.add_argument("--nnunet", default="./nnunet_data", help="Racine nnU-Net")
+    parser.add_argument("--inference", action="store_true", help="Prépare les données pour la prédiction (imagesTs)")
     
-    # Configurations des chemins
-    parser.add_argument("--src", default="./Base_IRM", help="Dossier source des patients IRM (Post-Ingesteur).")
-    parser.add_argument("--nnunet", default="./nnunet_data", help="Racine du projet nnU-Net.")
-    
-    # Options comportementales
-    parser.add_argument("--inference", action="store_true", help="Prépare les données pour la prédiction (imagesTs).")
+    # --- NOUVEAUX FLAGS ---
     parser.add_argument("--num_channels", type=int, default=3, choices=[1, 2, 3, 4], 
-                        help="Nombre de phases à injecter dans le réseau (1=T0, 2=T0+Pic, etc.).")
-    
-    # Configurations des métadonnées (Les fameux flags !)
+                        help="Nombre de phases à extraire (ex: 3 = T0, Wash-in, +90s)")
     parser.add_argument("--mode", type=str, default="INGESTEUR", choices=["INGESTEUR", "MAMAMIA", "BLIND"],
-                        help="Stratégie pour recréer la frise chronologique d'injection.")
+                        help="Source de la chronologie (Log interne, CSV externe, ou Aveugle).")
     parser.add_argument("--csv", type=str, default=None, 
-                        help="Chemin vers le CSV (Obligatoire si --mode MAMAMIA).")
-    
+                        help="Chemin vers le metadata.csv (Requis si mode MAMAMIA).")
+                        
     args = parser.parse_args()
     
-    # Vérification de sécurité
     if args.mode == "MAMAMIA" and not args.csv:
-        parser.error("Le flag --csv est obligatoire lorsque le --mode MAMAMIA est activé.")
+        parser.error("Le flag --csv est obligatoire avec le mode MAMAMIA.")
         
+    # N'oublie pas d'ajouter les nouveaux paramètres à l'appel de ta fonction !
     extract_dce_to_nnunet_flat(
         subjects_dir=args.src, 
         nnunet_root=args.nnunet, 
