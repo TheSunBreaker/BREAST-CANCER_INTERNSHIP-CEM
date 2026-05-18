@@ -3,7 +3,7 @@
 
 """
 ===============================================================================
-  Script de Séparation Train / Test pour nnU-Net V2
+  Script de Séparation Train / Test pour nnU-Net V2 (Version Idempotente et Sécurisée)
 ===============================================================================
 Rôle :
   Déplace un pourcentage des données d'entraînement (imagesTr / labelsTr)
@@ -13,8 +13,9 @@ Fonctionnalités :
   - Détection automatique des patients via le dossier labelsTr.
   - Gestion des préférences : Tente d'inclure des patients spécifiques dans le 
     jeu de test (soit par leur ID exact, soit par leur indice numérique).
-  - Complétion aléatoire : Si les préférences ne suffisent pas à atteindre le 
-    ratio demandé, sélectionne aléatoirement le reste des patients.
+  - Sécurité Idempotente : Relancer le script n'écrasera pas les ratios si 
+    l'objectif est déjà atteint.
+  - Complétion aléatoire sécurisée (protection contre les populations insuffisantes).
   - Mise à jour automatique du fichier 'dataset.json' (champ numTraining).
 
 Utilisation :
@@ -24,8 +25,6 @@ Utilisation :
 ===============================================================================
 """
 
-import os
-import glob
 import json
 import random
 import shutil
@@ -48,7 +47,7 @@ def main():
         "--ratio", 
         type=float, 
         default=0.20, 
-        help="Ratio de données à déplacer vers le test (ex: 0.20 pour 20%%). (Défaut: 0.20)"
+        help="Ratio global de données à avoir dans le test (ex: 0.20 pour 20%%). (Défaut: 0.20)"
     )
     parser.add_argument(
         "--pref", 
@@ -79,11 +78,12 @@ def main():
     imagesTs.mkdir(parents=True, exist_ok=True)
     labelsTs.mkdir(parents=True, exist_ok=True)
 
-    # 2. Identification du VRAI total (Train + Test existant)
+    # 2. Identification du VRAI total (Train + Test existant) avec protection doublons
     train_patients = sorted([f.name.replace(".nii.gz", "") for f in labelsTr.glob("*.nii.gz")])
-    test_patients_a_deplacer_existants = sorted([f.name.replace(".nii.gz", "") for f in labelsTs.glob("*.nii.gz")])
+    test_patients_existants = sorted([f.name.replace(".nii.gz", "") for f in labelsTs.glob("*.nii.gz")])
     
-    all_patients_ever = train_patients + test_patients_a_deplacer_existants
+    # Fusion sécurisée par SET pour éviter les doublons accidentels
+    all_patients_ever = sorted(set(train_patients + test_patients_existants))
     total_patients = len(all_patients_ever)
     
     if total_patients == 0:
@@ -97,56 +97,66 @@ def main():
     if safe_ratio > 0 and target_test_count == 0:
         target_test_count = 1
 
-    print(f"\nAnalyse du dataset : {total_patients} patients au total (Train: {len(train_patients)} | Test: {len(test_patients_a_deplacer_existants)}).")
+    print(f"\nAnalyse du dataset : {total_patients} patients au total (Train: {len(train_patients)} | Test: {len(test_patients_existants)}).")
     print(f"Objectif global pour le Test ({safe_ratio*100}%) : {target_test_count} patients.")
 
-    # --- LE BOUCLIER DE SÉCURITÉ ---
-    if len(test_patients_a_deplacer_existants) >= target_test_count:
-        print(f"\n🛡️ SÉCURITÉ ACTIVÉE : Le dossier de test contient déjà {len(test_patients_a_deplacer_existants)} patients.")
+    # --- LE BOUCLIER DE SÉCURITÉ IDEMPOTENT ---
+    if len(test_patients_existants) >= target_test_count:
+        print(f"\nSÉCURITÉ ACTIVÉE : Le dossier de test contient déjà {len(test_patients_existants)} patients.")
         print("L'objectif est déjà atteint ou dépassé. Le script s'arrête pour éviter de vider l'entraînement.")
         return
         
-    # S'il en manque, on calcule combien on doit encore en déplacer
-    needed_count = target_test_count - len(test_patients_a_deplacer_existants)
-    print(f"Ajustement : Il manque {needed_count} patient(s) à déplacer pour atteindre le ratio.")
+    # S'il en manque, on calcule combien on doit encore en déplacer cette fois-ci
+    needed_count = target_test_count - len(test_patients_existants)
+    print(f"Ajustement : Il manque {needed_count} patient(s) à déplacer pour atteindre l'objectif global.")
 
     # 4. Traitement des Préférences (On cherche uniquement parmi ceux qui sont encore dans Train)
-    test_patients_a_deplacer_a_deplacer = []
+    test_patients_a_deplacer = []
     
     for p in args.pref:
         patient_to_add = None
         if p.isdigit():
             idx = int(p)
-            # Attention: l'indice s'applique sur la liste globale triée pour être constant
+            # L'indice s'applique sur la liste globale immuable
             if 0 <= idx < total_patients:
-                patient_to_add = sorted(all_patients_ever)[idx]
+                patient_to_add = all_patients_ever[idx]
             else:
                 print(f"  [Avertissement] Indice préféré '{p}' hors limites. Ignoré.")
         else:
             patient_to_add = p
                 
-        # On vérifie s'il est valide, et SURTOUT s'il n'est pas DÉJÀ dans le test
-        if patient_to_add in test_patients_a_deplacer_existants:
+        # On vérifie la validité et la position du patient
+        if patient_to_add in test_patients_existants:
             print(f"  [Info] La préférence {patient_to_add} est déjà dans le dossier de test.")
-        elif patient_to_add in train_patients and patient_to_add not in test_patients_a_deplacer_a_deplacer:
-            if len(test_patients_a_deplacer_a_deplacer) < needed_count:
-                test_patients_a_deplacer_a_deplacer.append(patient_to_add)
+        elif patient_to_add in train_patients and patient_to_add not in test_patients_a_deplacer:
+            if len(test_patients_a_deplacer) < needed_count:
+                test_patients_a_deplacer.append(patient_to_add)
                 print(f"Préférence honorée : {patient_to_add} sélectionné pour le déplacement.")
             else:
                 print(f"  [Avertissement] Quota manquant atteint, préférence {patient_to_add} ignorée.")
 
     # 5. Complétion aléatoire si le quota manquant n'est pas atteint
-    remaining_in_train = [p for p in train_patients if p not in test_patients_a_deplacer_a_deplacer]
-    still_needed = needed_count - len(test_patients_a_deplacer_a_deplacer)
+    remaining_in_train = [p for p in train_patients if p not in test_patients_a_deplacer]
+    still_needed = needed_count - len(test_patients_a_deplacer)
     
     if still_needed > 0:
+        # Protection anti-crash si le nombre demandé dépasse le nombre disponible
+        if still_needed > len(remaining_in_train):
+            print(f"  [Avertissement] Impossible d'atteindre le quota demandé. "
+                  f"Seulement {len(remaining_in_train)} patient(s) disponibles.")
+            still_needed = len(remaining_in_train)
+
         random.seed(args.seed)
         random_selection = random.sample(remaining_in_train, still_needed)
-        test_patients_a_deplacer_a_deplacer.extend(random_selection)
+        test_patients_a_deplacer.extend(random_selection)
         print(f"  Complétion aléatoire : {still_needed} patient(s) supplémentaire(s) sélectionné(s).")
 
-    test_patients_a_deplacer_a_deplacer.sort()
+    test_patients_a_deplacer.sort()
     
+    if not test_patients_a_deplacer:
+        print("\nAucun nouveau patient à déplacer.")
+        return
+
     # 6. DÉPLACEMENT PHYSIQUE DES FICHIERS
     print("\nDéplacement des fichiers en cours...")
     
@@ -159,7 +169,6 @@ def main():
             shutil.move(str(lbl_src), str(lbl_dst))
         
         # 6.2 Déplacement des Images (Toutes les modalités associées)
-        # On utilise glob pour attraper dynamiquement ID_0000.nii.gz, ID_0001.nii.gz...
         patient_images = imagesTr.glob(f"{patient_id}_*.nii.gz")
         for img_src in patient_images:
             img_dst = imagesTs / img_src.name
@@ -167,9 +176,11 @@ def main():
             
         moved_count += 1
 
-    # 7. Mise à jour de dataset.json (Crucial pour nnU-Net)
+    # 7. Mise à jour de dataset.json
     json_path = dataset_dir / "dataset.json"
-    new_train_count = total_patients - moved_count
+    
+    # Calcul rigoureux du nombre restant en Train
+    new_train_count = len(train_patients) - moved_count
     
     if json_path.exists():
         with open(json_path, "r", encoding="utf-8") as f:
@@ -186,13 +197,15 @@ def main():
         print(f"\nAttention : dataset.json introuvable à la racine {dataset_dir}.")
 
     # 8. Bilan Final
+    final_test_count = len(test_patients_existants) + moved_count
+
     print("\n" + "="*50)
     print("                BILAN DU SPLIT              ")
     print("="*50)
     print(f"  Patients en Entraînement (Train) : {new_train_count}")
-    print(f"  Patients en Test (Test)          : {moved_count}")
+    print(f"  Patients en Test Globaux (Test)  : {final_test_count}")
     print("="*50)
-    print("  Liste des patients isolés pour le test :")
+    print(f"  Liste des {moved_count} nouveaux patients déplacés vers le test :")
     for p in test_patients_a_deplacer:
         print(f"    - {p}")
     print("="*50 + "\n")
