@@ -3,7 +3,7 @@
 
 """
 ===============================================================================
-  nnunet_manager.py (Couteau-Suisse nnU-Net V2 - Sécurisé HPC)
+ Couteau-Suisse nnU-Net V2 - Sécurisé HPC
 ===============================================================================
 Script pour gérer tout le cycle de vie d'un modèle nnU-Net V2.
 Permet d'automatiser le preprocessing, l'entraînement séquentiel (anti OOM),
