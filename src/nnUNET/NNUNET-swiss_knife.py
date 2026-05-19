@@ -53,6 +53,16 @@ def setup_env():
     
     # Force l'utilisation d'un seul thread pour certaines librairies C++ (HPC)
     env.setdefault("OMP_NUM_THREADS", "1")
+
+    # --- SOLUTION LOGIQUE POUR LE RECOURS AU FLAG --USER DANS LE SERVEUR ---
+    # On ajoute le répertoire des binaires locaux de l'utilisateur (~/.local/bin)
+    # au début du PATH pour que subprocess trouve nnUNetv2_plan_and_preprocess
+    local_bin_path = str(Path.home() / ".local" / "bin")
+    if "PATH" in env:
+        env["PATH"] = local_bin_path + os.path.pathsep + env["PATH"]
+    else:
+        env["PATH"] = local_bin_path
+    # --------------------------------------------------------
     
     NNUNET_RAW.mkdir(parents=True, exist_ok=True)
     NNUNET_PREPROCESSED.mkdir(parents=True, exist_ok=True)
