@@ -60,6 +60,12 @@ def setup_env():
     env["nnUNet_n_proc_DA"] = "0" 
     # ---------------------------------------------------------
 
+    # --- NOUVELLE SÉCURITÉ ANTI-CRASH COMPILATEUR (Triton / gcc) ---
+    # Désactive torch.compile pour éviter l'erreur "Failed to find C compiler"
+    env["nnUNet_compile"] = "F"
+    env["TORCH_COMPILE_DISABLE"] = "1"
+    # ---------------------------------------------------------------
+
     # --- SOLUTION LOGIQUE POUR LE RECOURS AU FLAG --USER DANS LE SERVEUR ---
     # On ajoute le répertoire des binaires locaux de l'utilisateur (~/.local/bin)
     # au début du PATH pour que subprocess trouve nnUNetv2_plan_and_preprocess
