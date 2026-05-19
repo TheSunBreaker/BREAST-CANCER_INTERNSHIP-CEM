@@ -54,6 +54,12 @@ def setup_env():
     # Force l'utilisation d'un seul thread pour certaines librairies C++ (HPC)
     env.setdefault("OMP_NUM_THREADS", "1")
 
+    # --- AJOUT CRITIQUE POUR ÉVITER LE CRASH SHARED MEMORY ---
+    # Réduit drastiquement le nombre de workers (Défaut: 12) à 2 ou 4.
+    # L'entraînement sera un tout petit peu plus long, mais il ne crashera plus.
+    env["nnUNet_n_proc_DA"] = "2" 
+    # ---------------------------------------------------------
+
     # --- SOLUTION LOGIQUE POUR LE RECOURS AU FLAG --USER DANS LE SERVEUR ---
     # On ajoute le répertoire des binaires locaux de l'utilisateur (~/.local/bin)
     # au début du PATH pour que subprocess trouve nnUNetv2_plan_and_preprocess
