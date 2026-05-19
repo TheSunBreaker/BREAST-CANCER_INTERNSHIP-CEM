@@ -57,7 +57,7 @@ def setup_env():
     # --- AJOUT CRITIQUE POUR ÉVITER LE CRASH SHARED MEMORY ---
     # Réduit drastiquement le nombre de workers (Défaut: 12) à 2 ou 4.
     # L'entraînement sera un tout petit peu plus long, mais il ne crashera plus.
-    env["nnUNet_n_proc_DA"] = "2" 
+    env["nnUNet_n_proc_DA"] = "0" 
     # ---------------------------------------------------------
 
     # --- SOLUTION LOGIQUE POUR LE RECOURS AU FLAG --USER DANS LE SERVEUR ---
