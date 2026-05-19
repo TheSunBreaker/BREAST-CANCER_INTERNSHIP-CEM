@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
+r"""
 ===============================================================================
  Couteau-Suisse nnU-Net V2 - Sécurisé HPC
 ===============================================================================
@@ -15,6 +15,16 @@ Sécurités intégrées :
   - Recherche dynamique du dossier de logs (gestion des plans).
   - Threading robuste pour TensorBoard (Lecture historique + Tail + Flush).
 ===============================================================================
+
+DEPENDANCES REQUISES :
+
+pip3 install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip3 install --user graphviz tensorboard hiddenlayer 
+Cloner le git nnUNet et suivre les instructions du git.
+
+
+ATTENTION, SUR LE SERVER SUR LEQUEL A ETE TESTE CE CODE, LA MEMOIRE PARTAGEE DES DOCKERS LIMITEE ENPECHE D'UTILISER PLUSIEURS WORKERS POUR LE DATALOADER ET LA DATA AUGMNTATION. ALORS IL FAUT 0 COMME NOMBRE DE WORKERS
+DE LA VARIABLE D'ENVIRONNEMENT 'nnUNet_n_proc_DA'. VOIR JUSTE EN BAS DANS LE CODE. CPEENDANT, LE PREPROCESSING LUI NE SUPPORTE PAS 0. ALORS IL VAUT MIEEUX METTRE A 1 POUR LE PREPROCESSING ET A 0 POUR LE TRAIN
 """
 
 import os
