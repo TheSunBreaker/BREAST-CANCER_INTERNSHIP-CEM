@@ -128,10 +128,20 @@ def select_best_dce_phases_jump_anchored(timeline: list, num_channels: int, nb_f
     3. T1 (Wash-in) = L'image juste APRÈS ce saut (Ancrage T_inj).
     4. T_X (Plateau/Wash-out) = Les images les plus proches de (T_inj + 90s), (T_inj + 180s).
     """
-    # Fallback de sécurité : Si on n'a pas de métadonnées ou une seule image
+    # --- MODE BLIND (Répartition Heuristique) ---
     if not timeline or len(timeline) < 2:
-        # On prend bêtement les premières images disponibles pour ne pas crasher
-        return [min(i, nb_files_available-1) for i in range(num_channels)]
+        print("    [MODE BLIND ACTIVÉ] Aucune métadonnée. Répartition heuristique de l'examen.")
+
+        # SÉCURITÉ : Empêche la division par zéro si on ne demande qu'une seule phase (T0)
+        if num_channels == 1:
+            return [0]
+          
+        if nb_files_available <= num_channels:
+            # Si on a moins de fichiers que de canaux demandés, on complète avec le dernier fichier
+            return list(range(nb_files_available)) + [nb_files_available-1] * (num_channels - nb_files_available)
+        else:
+            # Si on a beaucoup de fichiers, on répartit équitablement du début à la fin de l'examen
+            return [int(i * (nb_files_available - 1) / (num_channels - 1)) for i in range(num_channels)]
 
     # Sécurité : On s'assure de ne pas chercher des index au-delà des fichiers réellement sur le disque
     max_idx = min(len(timeline), nb_files_available)
@@ -199,9 +209,9 @@ def extract_dce_to_nnunet_flat(
         labelsTr_dir = os.path.join(nnunet_raw, "labelsTr")
         os.makedirs(labelsTr_dir, exist_ok=True)
 
-    # Chargement préalable de la base MAMA-MIA si demandé
+    # === NOUVEAU : Chargement de la base externe si demandée ===
     mamamia_db = {}
-    if mode == "MAMAMIA":
+    if mode == "MAMAMIA" and csv_path:
         mamamia_db = load_mamamia_database(csv_path)
 
     subjects = sorted([s for s in os.listdir(subjects_dir) if os.path.isdir(os.path.join(subjects_dir, s))])
@@ -212,11 +222,6 @@ def extract_dce_to_nnunet_flat(
     print(f"==================================================\n")
 
     valid_subjects = 0
-
-    # === NOUVEAU : Chargement de la base externe si demandée ===
-    mamamia_db = {}
-    if mode == "MAMAMIA" and csv_path:
-        mamamia_db = load_mamamia_database(csv_path)
 
     for subj in subjects:
         subj_path = os.path.join(subjects_dir, subj)
@@ -246,6 +251,8 @@ def extract_dce_to_nnunet_flat(
             timeline = mamamia_db.get(subj, [])
             if not timeline:
                 print(f"    [ALERTE] Patient {subj} absent du CSV. Bascule en mode Aveugle.")
+
+        # Si mode == "BLIND", timeline reste volontairement vide [] pour déclencher la sécurité.
 
         # === NOUVEAU : SÉLECTION PHYSIOLOGIQUE DES PHASES ===
         selected_indices = select_best_dce_phases_jump_anchored(timeline, num_channels, nb_fichiers_dispos)
