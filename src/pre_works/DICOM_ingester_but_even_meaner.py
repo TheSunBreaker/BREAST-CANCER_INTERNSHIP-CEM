@@ -660,10 +660,10 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
         f"Patients totaux analysés      : {len(stats['patients'])}",
         f"Volumes PET traités           : {stats['pet_traites']}",
         f"Volumes CT traités            : {stats['ct_traites']}",
-        f"Masques PET/CT isolés         : {stats['masques_pet']}",
-        f"Masques IRM isolés            : {stats['masques_irm']}",
+        f"Masques PET/CT trouvés         : {stats['masques_pet']}",
+        f"Masques IRM trouvés            : {stats['masques_irm']}",
         f"Masques Orphelins (DANGER)    : {stats['masques_orphelins']}",
-        f"Séquences IRM dérivées virées : {stats['irm_rejetees']} (MIP, SUB, etc.)",
+        f"Séquences IRM dérivées écartées : {stats['irm_rejetees']} (MIP, SUB, etc.)",
         f"Séquences IRM secondaires     : {stats['irm_secondaires']}",
         f"Séquences exotiques archivées : {stats['autres_modalites']}",
         "\n--- DISTRIBUTION DES PHASES IRM (T1/DCE) ---"
