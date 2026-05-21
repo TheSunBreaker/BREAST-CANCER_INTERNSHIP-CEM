@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 r"""
-Orchestrateur IRM DCE vers nnU-Net V2 - V3 (Jump-Anchored Time-Matching).
+Orchestrateur IRM DCE vers nnU-Net V2 - V3.1 (Jump-Anchored Time-Matching + Filtre Clinique).
 
+=============================================================================
+NOUVEAUTÉS V3.1 (Le Filtre Oncologique) :
+- Support Natif Excel/CSV : Gère directement les fichiers .xlsx et .csv pour les métadonnées.
+- Filtre Triple Négatif : Option `--triple_neg_only` pour exclure automatiquement
+  les patients dont les récepteurs (ER, PR, HER2) ne sont pas strictement à 0.
+- Structuration de la DB : mamamia_db contient désormais la timeline ET le statut TNBC.
 =============================================================================
 NOUVEAUTÉS V3 :
 - Time-Matching Absolu : Sélectionne les phases NIfTI non pas par leur index (0,1,2,3),
@@ -11,9 +17,8 @@ NOUVEAUTÉS V3 :
     -> INGESTEUR : Lit le 'DCE_temporal_log.txt' généré par notre Ingesteur V6.
     -> MAMAMIA   : Parse le fichier CSV officiel de MAMA-MIA pour lire 'acquisition_times'.
     -> BLIND     : Mode survie si aucune métadonnée n'est disponible (heuristique).
-=============================================================================
-
-=============================================================================
+==
+  ============================================================================
 LA STRATÉGIE TEMPORELLE ABSOLUE :
 1. Détecte le "Grand Saut" (Injection du produit de contraste).
 2. T0 (Baseline) = L'image juste avant le saut.
@@ -89,32 +94,67 @@ def parse_ingesteur_log(log_path: str) -> list:
         return []
 
 
-def load_mamamia_database(csv_path: str) -> dict:
+def load_mamamia_database(file_path: str) -> dict:
     """
-    Parse le CSV externe (ex: MAMA-MIA) pour extraire la colonne 'acquisition_times'.
+    Parse le fichier clinique externe (CSV ou XLSX).
+    Extrait la timeline ET le statut hormonal (ER, PR, HER2) pour le filtre TNBC.
     
-    Retourne un dictionnaire liant le patient à sa timeline:
-    {'QIN-01': [0.0, 584.0, 714.0], 'QIN-02': [0.0, 165.0, 288.0]}
+    Retourne un dictionnaire imbriqué :
+    {
+        'QIN-01': {'timeline': [0.0, 584.0, 714.0], 'is_tnbc': True},
+        'QIN-02': {'timeline': [0.0, 165.0, 288.0], 'is_tnbc': False}
+    }
     """
     db = {}
-    if not csv_path or not os.path.exists(csv_path): 
+    if not file_path or not os.path.exists(file_path): 
         return db
         
     try:
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                pid = row.get("patient_id", "").strip()
-                times_str = row.get("acquisition_times", "").strip()
-                
-                if pid and times_str:
-                    try: 
-                        # ast.literal_eval transforme la string "[0, 165]" en vraie liste Python
-                        db[pid] = [float(t) for t in ast.literal_eval(times_str)]
-                    except: 
-                        pass
+        rows = []
+        # --- SUPPORT EXCEL (.xlsx) ET CSV ---
+        if file_path.lower().endswith(('.xlsx', '.xls')):
+            # Si c'est un Excel, on importe pandas à la volée
+            import pandas as pd
+            df = pd.read_excel(file_path)
+            # Nettoyage des noms de colonnes (minuscule, sans espaces)
+            df.columns = df.columns.str.strip().str.lower()
+            # Transformation en liste de dictionnaires pour homogénéiser avec le csv.DictReader
+            rows = df.to_dict('records')
+        else:
+            with open(file_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                # Nettoyage des clés en minuscule pour éviter les bugs (ex: "ER" vs "er")
+                rows = [{k.strip().lower() if k else '': v for k, v in row.items()} for row in reader]
+
+        # --- PARSING DES DONNÉES CLINIQUES ---
+        for row in rows:
+            pid = str(row.get("patient_id", "")).strip()
+            times_str = str(row.get("acquisition_times", "")).strip()
+            
+            # Extraction du statut hormonal. 
+            # On met "1" par défaut si vide pour éviter qu'une valeur manquante
+            # ne soit comptée à tort comme "0" (Triple Négatif).
+            er = str(row.get("er", "1")).strip()
+            pr = str(row.get("pr", "1")).strip()
+            her2 = str(row.get("her2", "1")).strip()
+            
+            # On ignore les lignes sans ID ou sans timeline (NaN)
+            if pid and times_str and str(times_str).lower() != 'nan':
+                try: 
+                    timeline = [float(t) for t in ast.literal_eval(times_str)]
+                    
+                    # Un patient est Triple Négatif SI ET SEULEMENT SI les 3 marqueurs sont à 0.
+                    # On autorise les strings "0" et "0.0" pour parer aux formats d'export de données.
+                    is_tnbc = (er in ["0", "0.0", "0,0"]) and (pr in ["0", "0.0", "0,0"]) and (her2 in ["0", "0.0", "0,0"])
+                    
+                    db[pid] = {
+                        "timeline": timeline,
+                        "is_tnbc": is_tnbc
+                    }
+                except Exception:
+                    pass
     except Exception as e:
-        print(f"    [ERREUR CSV] Impossible de lire {csv_path}: {e}")
+        print(f"    [ERREUR BASE CLINIQUE] Impossible de lire {file_path}: {e}")
         
     return db
 
@@ -197,7 +237,8 @@ def extract_dce_to_nnunet_flat(
     channel_prefix: str = "DCE",
     is_inference: bool = False,
     mode: str = "INGESTEUR",
-    csv_path: str = None
+    csv_path: str = None,
+    triple_neg_only: bool = False #
 ):
     dataset_name = f"Dataset{dataset_id:03d}_{channel_prefix}"
     nnunet_raw = os.path.join(nnunet_root, "nnUNet_raw", dataset_name)
@@ -217,8 +258,9 @@ def extract_dce_to_nnunet_flat(
     subjects = sorted([s for s in os.listdir(subjects_dir) if os.path.isdir(os.path.join(subjects_dir, s))])
     print(f"\n==================================================")
     print(f" DÉMARRAGE PIPELINE (Mode: {mode} | Canaux visés: {num_channels})")
+    if triple_neg_only:
+        print(" [!] FILTRE ACTIF : Uniquement les tumeurs Triple Négatives (TNBC) [!]")
     print(f" {len(subjects)} patients trouvés dans le dossier source.")
-    print(f" Temps cibles physiologiques : {get_target_times(num_channels)} secondes")
     print(f"==================================================\n")
 
     valid_subjects = 0
@@ -248,13 +290,22 @@ def extract_dce_to_nnunet_flat(
             log_path = os.path.join(imgs_dir, "DCE_temporal_log.txt")
             timeline = parse_ingesteur_log(log_path)
         elif mode == "MAMAMIA":
-            timeline = mamamia_db.get(subj, [])
+            patient_info = mamamia_db.get(subj, {})
+            timeline = patient_info.get("timeline", [])
+            is_tnbc = patient_info.get("is_tnbc", False)
+            
+            # --- LE FILTRE TRIPLE NÉGATIF ---
+            # Si le filtre est activé et que le patient n'est pas TNBC (ou info manquante),
+            # on passe silencieusement au patient suivant.
+            if triple_neg_only and not is_tnbc:
+                print(f"    -> [FILTRE CLINIQUE] Patient ignoré (Statut Hormonal non Triple Négatif).")
+                continue
+                
             if not timeline:
-                print(f"    [ALERTE] Patient {subj} absent du CSV. Bascule en mode Aveugle.")
-
+                print(f"    [ALERTE] Patient {subj} absent de la base clinique. Bascule en mode Aveugle.")
         # Si mode == "BLIND", timeline reste volontairement vide [] pour déclencher la sécurité.
 
-        # === NOUVEAU : SÉLECTION PHYSIOLOGIQUE DES PHASES ===
+        # === SÉLECTION PHYSIOLOGIQUE DES PHASES ===
         selected_indices = select_best_dce_phases_jump_anchored(timeline, num_channels, nb_fichiers_dispos)
         
         # Affichage pour le suivi console
@@ -336,13 +387,16 @@ if __name__ == "__main__":
     parser.add_argument("--nnunet", default="./nnunet_data", help="Racine nnU-Net")
     parser.add_argument("--inference", action="store_true", help="Prépare les données pour la prédiction (imagesTs)")
     
-    # --- NOUVEAUX FLAGS ---
     parser.add_argument("--num_channels", type=int, default=3, choices=[1, 2, 3, 4], 
                         help="Nombre de phases à extraire (ex: 3 = T0, Wash-in, +90s)")
     parser.add_argument("--mode", type=str, default="INGESTEUR", choices=["INGESTEUR", "MAMAMIA", "BLIND"],
                         help="Source de la chronologie (Log interne, CSV externe, ou Aveugle).")
     parser.add_argument("--csv", type=str, default=None, 
                         help="Chemin vers le metadata.csv (Requis si mode MAMAMIA).")
+
+    # --- NOUVEAU FLAG ---
+    parser.add_argument("--triple_neg_only", action="store_true",
+                        help="Exclut les patients qui ne sont pas strictement Triple Négatifs (ER=0, PR=0, HER2=0).")
                         
     args = parser.parse_args()
     
@@ -356,5 +410,6 @@ if __name__ == "__main__":
         num_channels=args.num_channels,
         is_inference=args.inference,
         mode=args.mode,
-        csv_path=args.csv
+        csv_path=args.csv,
+        triple_neg_only=args.triple_neg_only
     )
