@@ -31,6 +31,7 @@ from tqdm import tqdm
 from datetime import datetime
 import tempfile
 import subprocess
+import json
 
 # ============================================================================
 # CONFIGURATIONS ET CHEMINS DES EXÉCUTABLES
@@ -43,6 +44,12 @@ DCM2NIIX_EXE = r"C:\Users\coul0426\dcm2niix_portable\dcm2niix.exe"
 # Standard clinique attendu pour notre projet de prédiction pCR
 REF_NB_IRMS_PHASES = 4
 
+def _safe_int(val, default=99999):
+    """Convertit de façon sécurisée une valeur DICOM en entier pour le tri."""
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
 
 # ============================================================================
 # MODULE 1 : ANALYSE TEMPORELLE ET CLINIQUE (METADATA)
@@ -456,6 +463,13 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 
             # 2. Trier les Études par l'heure de leur première séquence
             sorted_studies = sorted(studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
+
+            # --- NOUVEAU : Initialisation du Manifeste Patient IRM ---
+            patient_manifest = {
+                "PatientID": patient_id,
+                "Baseline_Date_Absolute": min(s["dt"] for s in sorted_studies[0]).strftime("%Y%m%d_%H%M"),
+                "Visits_Mapping": {}
+            }
             
             # 3. Traiter chaque visite
             for study_index, study_seqs in enumerate(sorted_studies):
@@ -464,6 +478,14 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 
                 # Baseline = Visite 0
                 target_folder_name = "imgs" if study_index == 0 else f"imgs_{study_date_str}"
+              
+                # Enregistrement dans le manifeste
+                patient_manifest["Visits_Mapping"][target_folder_name] = {
+                    "Date": study_date_str,
+                    "Type": "Baseline" if study_index == 0 else "Follow-up"
+                }
+
+              
                 imgs_dir = os.path.join(patient_mri_root, target_folder_name)
                 print(f" -> [IRM VISITE {study_index+1}] Date {study_date_str} - Cible : {target_folder_name}/")
                 
@@ -478,10 +500,11 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 # _1. TemporalPositionIdentifier (Si le constructeur l'a rempli, c'est la vérité)
                 # _2. Heure d'acquisition (Le plus fiable généralement)
                 # _3. SeriesNumber (Fallback si les temps sont écrasés)
+                # Le Tri de Phase Ultime de la V6 (Sécurisé contre les strings DICOM)
                 seq_sorted = sorted(study_seqs, key=lambda x: (
-                    x["temp_pos"] if x["temp_pos"] is not None else 99999,
+                    _safe_int(x["temp_pos"]),
                     x["dt"],
-                    x["series_num"]
+                    _safe_int(x["series_num"])
                 ))
                 
                 phases_dans_visite = 0
@@ -512,6 +535,10 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                 # Bilan statistique global
                 mri_phases_distribution[phases_dans_visite] += 1
 
+            # Sauvegarde du manifeste IRM à la racine du patient
+            with open(os.path.join(patient_mri_root, "visits_manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(patient_manifest, f, indent=4)
+
         # --------------------------------------------------------------------
         # TRAITEMENT UNIFIÉ PET ET CT (Synchronisation des dossiers)
         # --------------------------------------------------------------------
@@ -526,12 +553,26 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
             # 2. On trie les visites par ordre chronologique
             sorted_petct_studies = sorted(petct_studies.values(), key=lambda seqs: min(s["dt"] for s in seqs))
 
+            # --- NOUVEAU : Initialisation du Manifeste Patient PET/CT ---
+            petct_manifest = {
+                "PatientID": patient_id,
+                "Baseline_Date_Absolute": min(s["dt"] for s in sorted_petct_studies[0]).strftime("%Y%m%d_%H%M") if sorted_petct_studies else "UNKNOWN",
+                "Visits_Mapping": {}
+            }
+
             for study_index, study_seqs in enumerate(sorted_petct_studies):
                 # L'heure du tout premier scan (souvent le CT) devient le nom officiel du dossier
                 study_date_str = min(s["dt"] for s in study_seqs).strftime("%Y%m%d_%H%M")
                 
                 tep_folder_name = "TEP" if study_index == 0 else f"TEP_{study_date_str}"
                 imgs_folder_name = "imgs" if study_index == 0 else f"imgs_{study_date_str}"
+
+                # Enregistrement dans le manifeste
+                petct_manifest["Visits_Mapping"][imgs_folder_name] = {
+                    "Date": study_date_str,
+                    "Type": "Baseline" if study_index == 0 else "Follow-up"
+                }
+
                 imgs_dir = os.path.join(patient_petct_root, imgs_folder_name)
                 
                 # 3. On trie les séquences à l'intérieur de la visite
@@ -556,6 +597,7 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                             rapport_erreurs.append(alerte)
                         if suv_check['units'] not in ["BQML", "CNTS"]:
                             alerte_unite = f"[UNITÉ ANORMALE] Patient {patient_id} Visite {study_index+1} : L'unité est '{suv_check['units']}'."
+                            print(f"    -> {alerte_unite}") # <--- Pour le voir clignoter dans le terminal !
                             rapport_erreurs.append(alerte_unite)
                         
                         for f in seq["files"]: shutil.copy2(f, tep_dicom_dir)
@@ -570,6 +612,10 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                         out_path = os.path.join(imgs_dir, f"{patient_id}_TDM_{seq['uid'][-5:]}.nii.gz")
                         print(f" -> [CT VISITE {study_index+1}] NIfTI généré : {os.path.basename(out_path)}")
                         convert_files_to_nifti_plastimatch(seq["files"], out_path)
+
+            # Sauvegarde du manifeste PET/CT à la racine du patient
+            with open(os.path.join(patient_petct_root, "visits_manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(petct_manifest, f, indent=4)
                       
         # --------------------------------------------------------------------
         # TRAITEMENT MASQUES (AVEC MATCHING STRICT)
