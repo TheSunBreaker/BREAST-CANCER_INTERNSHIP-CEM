@@ -491,7 +491,7 @@ def ingest_raw_dicoms(raw_data_root: str, out_mri_root: str, out_petct_root: str
                     uid_to_target_mask_folder[seq["uid"]] = "dicom_mask_rm" if study_index == 0 else f"dicom_mask_rm_{study_date_str}"
                     
                     # On numérote la phase séquentiellement dans la visite
-                    file_prefix = f"{patient_id}_{phase_index:04d}"
+                    file_prefix = f"{patient_id}_VISIT{study_index:02d}_{phase_index:04d}"
 
                     # --- RESTAURATION : Audit des paramètres TR/TE ---
                     mri_audit = check_mri_metadata(seq["files"])
