@@ -105,6 +105,13 @@ DICE_DUPLICATE_THRESHOLD = 0.95
 # Ces masques sont copiés dans "a_verifier/" pour inspection radiologique.
 DICE_OVERLAP_THRESHOLD = 0.20
 
+# --- NOUVEAU : Stratégie de résolution des doublons (Dice ≥ 0.95) ---
+# True  : Conserve le masque le plus RÉCENT. On suppose que si le médecin a 
+#         généré un nouveau masque identique à 95%, c'est une correction/affinement.
+# False : Conserve le masque le plus PETIT. (Approche conservative historique 
+#         pour minimiser l'inclusion de tissu sain).
+KEEP_NEWEST_DUPLICATE_MASK = True
+
 # ── Chemin vers l'exécutable Plastimatch ──────────────────────────────────────
 # Plastimatch est requis UNIQUEMENT pour les fichiers RTSTRUCT.
 # Pour les SEG purs, pydicom-seg suffit et Plastimatch n'est pas appelé.
@@ -350,11 +357,26 @@ def load_mask_pixel_data(
         sitk_img = sitk.ReadImage(tmp_nii)
         arr      = sitk.GetArrayFromImage(sitk_img)  # shape (z, y, x)
 
-        # Masque binaire : True partout où un voxel est segmenté (valeur > 0)
         binary_mask      = arr > 0
         total_voxels     = int(binary_mask.size)
         segmented_voxels = int(binary_mask.sum())
         ratio = segmented_voxels / total_voxels if total_voxels > 0 else 0.0
+
+        # --- NOUVEAU : Extraction de la date de création absolue du masque ---
+        # On lit l'en-tête DICOM du masque pour trouver quand il a été dessiné/sauvegardé.
+        # InstanceCreationTime est la balise la plus fiable pour un masque généré a posteriori.
+        try:
+            ds = pydicom.dcmread(dcm_path, stop_before_pixels=True, force=True)
+            date_str = getattr(ds, 'InstanceCreationDate', getattr(ds, 'ContentDate', getattr(ds, 'SeriesDate', '19000101')))
+            time_str = getattr(ds, 'InstanceCreationTime', getattr(ds, 'ContentTime', getattr(ds, 'SeriesTime', '000000')))
+            
+            date_str = str(date_str).strip() if date_str else '19000101'
+            time_str = str(time_str).split('.')[0].strip() if time_str else '000000'
+            if len(time_str) < 6: time_str = time_str.ljust(6, '0')
+            
+            mask_dt = datetime.strptime(f"{date_str}{time_str[:6]}", "%Y%m%d%H%M%S")
+        except Exception:
+            mask_dt = datetime(1900, 1, 1) # Fallback absolu
 
         return {
             **result_base,
@@ -366,6 +388,7 @@ def load_mask_pixel_data(
             "segmented_voxels" : segmented_voxels,
             "total_voxels"     : total_voxels,
             "ratio"            : ratio,
+            "datetime"         : mask_dt, # <--- NOUVEAU CHAMP AJOUTÉ ICI
         }
 
     except Exception as e:
@@ -543,12 +566,24 @@ def analyze_multiple_masks(loaded_data: list[dict], log: list[str]) -> dict:
                     f"    → [DOUBLON] Dice ≥ {DICE_DUPLICATE_THRESHOLD} : "
                     "masques quasi identiques."
                 )
-                # On choisit lequel rejeter en comparant les volumes
-                # BUG CORRIGÉ V4 : utilisait 'data_a'/'data_b' au lieu de 'a'/'b'
-                if a["segmented_voxels"] <= b["segmented_voxels"]:
-                    keep_d, reject_d = a, b
+                # --- NOUVEAU : Logique de sélection paramétrable ---
+                raison_choix = "" # Initialisation vitale pour éviter le crash
+                if KEEP_NEWEST_DUPLICATE_MASK:
+                    # Stratégie Clinique (Superviseur) : On suppose que le médecin a 
+                    # corrigé/affiné son masque, on garde donc le plus récent.
+                    if a["datetime"] >= b["datetime"]:
+                        keep_d, reject_d = a, b
+                    else:
+                        keep_d, reject_d = b, a
+                    raison_choix = "le plus récent"
                 else:
-                    keep_d, reject_d = b, a
+                    # Stratégie Conservative : On garde le plus petit volume pour 
+                    # minimiser le risque d'inclure du tissu sain.
+                    if a["segmented_voxels"] <= b["segmented_voxels"]:
+                        keep_d, reject_d = a, b
+                    else:
+                        keep_d, reject_d = b, a
+                    raison_choix = "le plus petit volume"
 
                 log.append(
                     f"    → [GARDER]  {os.path.basename(keep_d['path'])} "
