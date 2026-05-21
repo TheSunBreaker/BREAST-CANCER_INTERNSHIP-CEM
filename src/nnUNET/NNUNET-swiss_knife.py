@@ -182,42 +182,76 @@ def monitor_training_log(dataset_id: str, trainer: str, config: str, fold: str, 
             return
             
         print(f"[MONITORING] Connecté au fichier : {log_file_path.name}. Lancement TensorBoard.")
-        
-        current_epoch = 0
-        
+                
+        current_epoch = None
+
         # 3. Lecture historique + Tailing robuste
         with open(log_file_path, "r", encoding="utf-8") as f:
-            # On NE FAIT PAS f.seek(0, 2). On lit depuis le début pour 
-            # récupérer l'historique en cas de --resume ou si on est arrivé en retard.
+            # Lecture depuis le début pour gérer resume + arrivée tardive
             while not stop_event.is_set():
                 line = f.readline()
+        
                 if not line:
-                    time.sleep(1) # Attente active si on a atteint la fin du fichier (tail)
+                    time.sleep(1)
                     continue
-                
-                line = line.strip().lower() 
-                
-                if line.startswith("epoch"):
-                    match = re.search(r"epoch (\d+)", line)
-                    if match: current_epoch = int(match.group(1))
-                
-                elif "train_loss" in line:
-                    match = re.search(r"train_loss\s*[:=]\s*([\d\.\-]+)", line)
-                    if match: writer.add_scalar("Loss/Train", float(match.group(1)), current_epoch)
-                        
-                elif "val_loss" in line:
-                    match = re.search(r"val_loss\s*[:=]\s*([\d\.\-]+)", line)
-                    if match: writer.add_scalar("Loss/Validation", float(match.group(1)), current_epoch)
-                        
-                elif "pseudo dice" in line:
-                    floats = re.findall(r"[\d\.]+", line.split(":")[-1])
+        
+                line = line.strip()
+        
+                if not line:
+                    continue
+        
+                line_lower = line.lower()
+        
+                # --- Détection robuste de l'epoch ---
+                epoch_match = re.search(r"epoch\s+(\d+)", line_lower)
+                if epoch_match:
+                    current_epoch = int(epoch_match.group(1))
+                    continue
+        
+                # Tant qu'aucune epoch valide n'a été vue,
+                # on ignore les métriques pour éviter epoch=0 fantôme
+                if current_epoch is None:
+                    continue
+        
+                # --- Train loss ---
+                if "train_loss" in line_lower:
+                    match = re.search(r"train_loss\s*[:=]\s*([-\d\.]+)", line_lower)
+                    if match:
+                        writer.add_scalar(
+                            "Loss/Train",
+                            float(match.group(1)),
+                            current_epoch
+                        )
+        
+                # --- Validation loss ---
+                elif "val_loss" in line_lower:
+                    match = re.search(r"val_loss\s*[:=]\s*([-\d\.]+)", line_lower)
+                    if match:
+                        writer.add_scalar(
+                            "Loss/Validation",
+                            float(match.group(1)),
+                            current_epoch
+                        )
+        
+                # --- Dice ---
+                elif "pseudo dice" in line_lower:
+                    floats = re.findall(r"[\d\.]+", line_lower.split(":")[-1])
+        
                     if floats:
                         tumor_dice = float(floats[-1])
-                        writer.add_scalar("Metrics/Pseudo_Dice", tumor_dice, current_epoch)
-                        # Pour ne pas spammer la console avec l'historique lu très vite, 
-                        # on n'imprime que si on est proche de l'epoch courante, ou modulo 10
+        
+                        writer.add_scalar(
+                            "Metrics/Pseudo_Dice",
+                            tumor_dice,
+                            current_epoch
+                        )
+        
+                        # Affichage console allégé
                         if current_epoch % 10 == 0:
-                            print(f" 📈 [Époque {current_epoch}] TB Mis à jour -> Dice Pseudo: {tumor_dice:.4f}")
+                            print(
+                                f" 📈 [Époque {current_epoch}] "
+                                f"TB Mis à jour -> Dice Pseudo: {tumor_dice:.4f}"
+                            )
 
     finally:
         # GARANTIE ABSOLUE : Fermeture propre de TensorBoard
