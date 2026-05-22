@@ -111,10 +111,11 @@ def isotropic_and_align_to_pet(
         resampler.SetReferenceImage(pet_iso)
       
         # NearestNeighbor CRITIQUE pour les masques (garde les pixels strictement à 0 ou 1)
+        # B-Spline pour les signaux physiques (CT)
         if is_mask:
             interp = sitk.sitkNearestNeighbor
         else:
-            interp = sitk.sitkLinear
+            interp = sitk.sitkBSpline
         
         resampler.SetInterpolator(interp)
       
@@ -243,18 +244,17 @@ def _surface_area_voxel(mask: np.ndarray, spacing_zyx: Tuple[float,float,float])
 def shape_features(mask: np.ndarray, spacing_zyx: Tuple[float,float,float], prefix: str) -> Dict[str, float]:
     vv = voxel_volume_mm3(spacing_zyx); voxels = int(mask.sum()); vol_mm3 = voxels * vv; vol_ml = vol_mm3 / 1000.0
     if voxels == 0:
-        if voxels == 0:
-            return {
-                f"{prefix}_voxels": 0,
-                f"{prefix}_volume_ml": 0.0,
-                f"{prefix}_surface_mm2": np.nan,
-                f"{prefix}_sphericity": np.nan,
-                f"{prefix}_bbox_x_mm": np.nan,
-                f"{prefix}_bbox_y_mm": np.nan,
-                f"{prefix}_bbox_z_mm": np.nan,
-                f"{prefix}_bbox_volume_ml": np.nan,
-                f"{prefix}_compactness_bbox": np.nan
-            }
+        return {
+            f"{prefix}_voxels": 0,
+            f"{prefix}_volume_ml": 0.0,
+            f"{prefix}_surface_mm2": np.nan,
+            f"{prefix}_sphericity": np.nan,
+            f"{prefix}_bbox_x_mm": np.nan,
+            f"{prefix}_bbox_y_mm": np.nan,
+            f"{prefix}_bbox_z_mm": np.nan,
+            f"{prefix}_bbox_volume_ml": np.nan,
+            f"{prefix}_compactness_bbox": np.nan
+        }
                 
     coords = np.argwhere(mask)
     minc = coords.min(axis=0)
@@ -374,7 +374,7 @@ def _make_extractor(bin_width: float, glcm_distances: List[int] = [1], enable_sh
         "resampledPixelSpacing": None,
     
         "normalize": False,
-        "interpolator": "sitkLinear",
+        "interpolator": "sitkBSpline", # B-Spline est plus robuste que Linear pour l'analyse de texture
         "label": 1,
         "preCrop": True,
         "correctMask": True,
