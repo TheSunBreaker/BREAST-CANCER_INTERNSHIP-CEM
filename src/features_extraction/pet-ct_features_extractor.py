@@ -480,8 +480,10 @@ def case_features(case_id: str,
     # 3. Extraction Numpy
     pet_np = sitk.GetArrayFromImage(pet_sitk)
     ct_np = sitk.GetArrayFromImage(ct_sitk)
-    breast_np = sitk.GetArrayFromImage(breast_sitk)
-    tumor_np = sitk.GetArrayFromImage(tumor_sitk)
+    # CRITIQUE : Convertir en booléen pour que Numpy comprenne qu'il s'agit d'un masque
+    # et non d'une matrice de coordonnées 3D (évite l'explosion de la RAM en 5D).
+    breast_np = sitk.GetArrayFromImage(breast_sitk).astype(bool)
+    tumor_np = sitk.GetArrayFromImage(tumor_sitk).astype(bool)
     
     # Cropping sur la bounding box du sein pour économiser la RAM
     [pet_np, ct_np, breast_np, tumor_np], slicer = _crop_to_mask_bbox(
