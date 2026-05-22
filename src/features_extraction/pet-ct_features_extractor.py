@@ -564,10 +564,13 @@ def case_features(case_id: str,
             pet_sitk_cropped.SetDirection(pet_sitk.GetDirection())
             ct_sitk_cropped.SetDirection(ct_sitk.GetDirection())
             
+            # Recalcul mathématique parfait de l'origine de l'image rognée
+            # CRITIQUE : Conversion explicite en int() natif Python, car SimpleITK 
+            # rejette les types numpy.int64 pour cette fonction spatiale.
             new_origin = pet_sitk.TransformIndexToPhysicalPoint(
-                (slicer[2].start, slicer[1].start, slicer[0].start)
-            )
-            
+                (int(slicer[2].start), int(slicer[1].start), int(slicer[0].start))
+            )     
+          
             pet_sitk_cropped.SetOrigin(new_origin)
             ct_sitk_cropped.SetOrigin(new_origin)
 
