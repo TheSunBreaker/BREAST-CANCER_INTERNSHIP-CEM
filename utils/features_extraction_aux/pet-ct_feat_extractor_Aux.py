@@ -21,6 +21,8 @@ TRAITEMENT INTERNE :
 
 Approximation SUVpeak basée sur un voisinage 3x3x3 voxels
 sur grille isotropique 2 mm.
+
+ATTENTION, ACTUELLEMENT, LA GLCM DISTANCE EST MISE PAR DEFAUT A 1, MAIS PLUS TARD? IL SERA INTERESSANT DE LA TESTER AVEC LES 2 ET 3 EN PLUS
 """
 
 from __future__ import annotations
@@ -99,7 +101,7 @@ def isotropic_and_align_to_pet(
     resampler_pet.SetOutputSpacing(iso_spacing)
     resampler_pet.SetOutputOrigin(pet_img.GetOrigin())
     resampler_pet.SetOutputDirection(pet_img.GetDirection())
-    resampler_pet.SetInterpolator(sitk.sitkBSpline)
+    resampler_pet.SetInterpolator(sitk.sitkLinear)
     resampler_pet.SetDefaultPixelValue(0.0)
 
     pet_iso = resampler_pet.Execute(pet_img)
@@ -107,8 +109,15 @@ def isotropic_and_align_to_pet(
     def align_to_ref(moving_img: sitk.Image, is_mask: bool, pad_value: float) -> sitk.Image:
         resampler = sitk.ResampleImageFilter()
         resampler.SetReferenceImage(pet_iso)
+      
         # NearestNeighbor CRITIQUE pour les masques (garde les pixels strictement à 0 ou 1)
-        resampler.SetInterpolator(sitk.sitkNearestNeighbor if is_mask else sitk.sitkBSpline)
+        if is_mask:
+            interp = sitk.sitkNearestNeighbor
+        else:
+            interp = sitk.sitkLinear
+        
+        resampler.SetInterpolator(interp)
+      
         resampler.SetDefaultPixelValue(pad_value)
         return resampler.Execute(moving_img)
 
@@ -129,7 +138,7 @@ def isotropic_and_align_to_pet(
 def _ring_by_distance(
     tumor_mask: np.ndarray,
     breast_mask: np.ndarray,
-    spacing: Tuple[float,float,float],
+    spacing_zyx: Tuple[float,float,float],
     inner_mm: float,
     outer_mm: float
 ) -> np.ndarray:
@@ -166,7 +175,7 @@ def _ring_by_distance(
 
     dist_mm = distance_transform_edt(
         outside,
-        sampling=spacing
+        sampling=spacing_zyx
     )
 
     # ------------------------------------------------------------
@@ -221,36 +230,73 @@ def split_breasts(breast_mask: np.ndarray, tumor_mask: np.ndarray):
 # =============================================================================
 # MODULE 3 : FEATURES NUMPY (Formes, Métabolisme, Densité)
 # =============================================================================
-def voxel_volume_mm3(spacing):
-    return float(spacing[0]*spacing[1]*spacing[2])
+def voxel_volume_mm3(spacing_zyx):
+    return float(spacing_zyx[0]*spacing_zyx[1]*spacing_zyx[2])
 
-def _surface_area_voxel(mask: np.ndarray, spacing: Tuple[float,float,float]) -> float:
-    sz, sy, sx = spacing; area = 0.0
+def _surface_area_voxel(mask: np.ndarray, spacing_zyx: Tuple[float,float,float]) -> float:
+    sz, sy, sx = spacing_zyx; area = 0.0
     a01 = (~mask[1:,:,:]) & mask[:-1,:,:]; a10 = (~mask[:-1,:,:]) & mask[1:,:,:]; area += (a01.sum()+a10.sum())*(sy*sz)
     b01 = (~mask[:,1:,:]) & mask[:,:-1,:]; b10 = (~mask[:,:-1,:]) & mask[:,1:,:]; area += (b01.sum()+b10.sum())*(sx*sz)
     c01 = (~mask[:,:,1:]) & mask[:,:,:-1]; c10 = (~mask[:,:,:-1]) & mask[:,:,1:]; area += (c01.sum()+c10.sum())*(sx*sy)
     return float(area)
 
-def shape_features(mask: np.ndarray, spacing: Tuple[float,float,float], prefix: str) -> Dict[str, float]:
-    vv = voxel_volume_mm3(spacing); voxels = int(mask.sum()); vol_mm3 = voxels * vv; vol_ml = vol_mm3 / 1000.0
+def shape_features(mask: np.ndarray, spacing_zyx: Tuple[float,float,float], prefix: str) -> Dict[str, float]:
+    vv = voxel_volume_mm3(spacing_zyx); voxels = int(mask.sum()); vol_mm3 = voxels * vv; vol_ml = vol_mm3 / 1000.0
     if voxels == 0:
-        return {f"{prefix}_voxels":0, f"{prefix}_volume_ml":0.0, f"{prefix}_surface_mm2":np.nan, f"{prefix}_sphericity":np.nan,
-                f"{prefix}_bbox_x_mm": float(dim_x_mm), f"{prefix}_bbox_y_mm": float(dim_y_mm), f"{prefix}_bbox_z_mm": float(dim_z_mm),
-                f"{prefix}_bbox_volume_ml":np.nan, f"{prefix}_compactness_bbox":np.nan}
+        if voxels == 0:
+            return {
+                f"{prefix}_voxels": 0,
+                f"{prefix}_volume_ml": 0.0,
+                f"{prefix}_surface_mm2": np.nan,
+                f"{prefix}_sphericity": np.nan,
+                f"{prefix}_bbox_x_mm": np.nan,
+                f"{prefix}_bbox_y_mm": np.nan,
+                f"{prefix}_bbox_z_mm": np.nan,
+                f"{prefix}_bbox_volume_ml": np.nan,
+                f"{prefix}_compactness_bbox": np.nan
+            }
                 
-    coords = np.argwhere(mask); minc = coords.min(axis=0); maxc = coords.max(axis=0)
-    dims_vox = (maxc - minc + 1).astype(np.float32)
-    spacing_arr = np.array(spacing, dtype=np.float32)
-    dims_mm_zyx = dims_vox * spacing_arr
-    # Conversion explicite vers XYZ physiques
+    coords = np.argwhere(mask)
+    minc = coords.min(axis=0)
+    maxc = coords.max(axis=0)
+    
+    dims_vox_zyx = (maxc - minc + 1).astype(np.float32)
+    
+    spacing_arr_zyx = np.array(spacing_zyx, dtype=np.float32)
+    
+    dims_mm_zyx = dims_vox_zyx * spacing_arr_zyx
+    
     dim_z_mm, dim_y_mm, dim_x_mm = dims_mm_zyx
-    surface = _surface_area_voxel(mask, spacing)
-    sphericity = ((math.pi ** (1/3.0)) * (6.0 * vol_mm3) ** (2/3.0)) / surface if surface > 0 else np.nan
-    bbox_vol_ml = float(np.prod(dims_mm) / 1000.0); compact_bbox = (vol_ml / bbox_vol_ml) if bbox_vol_ml > 0 else np.nan
-
-    return {f"{prefix}_voxels":voxels, f"{prefix}_volume_ml":float(vol_ml), f"{prefix}_surface_mm2":float(surface),
-            f"{prefix}_sphericity":float(sphericity), f"{prefix}_bbox_x_mm":float(dims_mm[0]), f"{prefix}_bbox_y_mm":float(dims_mm[1]),
-            f"{prefix}_bbox_z_mm":float(dims_mm[2]), f"{prefix}_bbox_volume_ml":float(bbox_vol_ml), f"{prefix}_compactness_bbox":float(compact_bbox)}
+    
+    surface = _surface_area_voxel(mask, spacing_zyx)
+    
+    sphericity = (
+        ((math.pi ** (1/3.0)) * (6.0 * vol_mm3) ** (2/3.0)) / surface
+        if surface > 0 else np.nan
+    )
+    
+    bbox_vol_ml = float(
+        (dim_x_mm * dim_y_mm * dim_z_mm) / 1000.0
+    )
+    
+    compact_bbox = (
+        vol_ml / bbox_vol_ml
+        if bbox_vol_ml > 0 else np.nan
+    )
+    
+    return {
+        f"{prefix}_voxels": voxels,
+        f"{prefix}_volume_ml": float(vol_ml),
+        f"{prefix}_surface_mm2": float(surface),
+        f"{prefix}_sphericity": float(sphericity),
+    
+        f"{prefix}_bbox_x_mm": float(dim_x_mm),
+        f"{prefix}_bbox_y_mm": float(dim_y_mm),
+        f"{prefix}_bbox_z_mm": float(dim_z_mm),
+    
+        f"{prefix}_bbox_volume_ml": float(bbox_vol_ml),
+        f"{prefix}_compactness_bbox": float(compact_bbox),
+    }
 
 def first_order(arr: np.ndarray, mask: np.ndarray, prefix: str) -> Dict[str, float]:
     vals = arr[mask]
@@ -275,21 +321,35 @@ def suv_peak_3x3x3(pet: np.ndarray, tumor_mask: np.ndarray) -> float:
     vals = pet[xs, ys, zs][tumor_mask[xs, ys, zs]]
     return float(vals.mean()) if vals.size else np.nan
 
-def mtv_tlg(pet: np.ndarray, tumor_mask: np.ndarray, spacing: Tuple[float,float,float], mode: str="41pct"):
+def mtv_tlg(pet: np.ndarray, tumor_mask: np.ndarray, spacing_zyx: Tuple[float,float,float], mode: str="41pct"):
     vals = pet[tumor_mask]
     if vals.size == 0: return 0.0, 0.0
     thr = float(vals.max() * 0.41) if mode == "41pct" else 2.5
     sub = tumor_mask & (pet >= thr)
     if sub.sum() == 0: return 0.0, 0.0
-    vol_ml = sub.sum() * voxel_volume_mm3(spacing) / 1000.0
+    vol_ml = sub.sum() * voxel_volume_mm3(spacing_zyx) / 1000.0
     tlg = float(pet[sub].mean() * vol_ml)
     return float(vol_ml), float(tlg)
 
 # =============================================================================
 # MODULE 4 : PYRADIOMICS (Textures Intelligentes)
 # =============================================================================
-def _make_extractor(bin_width: float, glcm_distances: List[int] = [1, 2, 3], enable_log: bool = False, enable_wavelet: bool = False):
+def _make_extractor(bin_width: float, glcm_distances: List[int] = [1], enable_shape: bool = True, enable_log: bool = False, enable_wavelet: bool = False):
     """Instancie l'extracteur PyRadiomics avec la liste COMPLÈTE des features."""
+    # IMPORTANT:
+    #
+    # Shape features are enabled only for true anatomical ROIs
+    # such as tumors.
+    #
+    # They are disabled for artificial peritumoral rings because:
+    #
+    # - ring geometry is algorithmically generated
+    # - strongly dependent on dilation/distance definition
+    # - highly correlated with tumor size
+    # - often biologically non-informative
+    #
+    # This improves feature robustness and reduces redundancy.
+  
     try:
         from radiomics import featureextractor
     except ImportError as e:
@@ -314,7 +374,7 @@ def _make_extractor(bin_width: float, glcm_distances: List[int] = [1, 2, 3], ena
         "resampledPixelSpacing": None,
     
         "normalize": False,
-        "interpolator": "sitkBSpline",
+        "interpolator": "sitkLinear",
         "label": 1,
         "preCrop": True,
         "correctMask": True,
@@ -331,7 +391,6 @@ def _make_extractor(bin_width: float, glcm_distances: List[int] = [1, 2, 3], ena
 
     for cls in [
         "firstorder",
-        "shape",
         "glcm",
         "glrlm",
         "glszm",
@@ -339,6 +398,15 @@ def _make_extractor(bin_width: float, glcm_distances: List[int] = [1, 2, 3], ena
         "ngtdm"
     ]:
         extr.enableFeatureClassByName(cls)
+
+    # ============================================================
+    # Shape features are biologically meaningful for tumors,
+    # but generally NOT for artificial peritumoral rings.
+    #
+    # Therefore they can be disabled for ring extraction.
+    # ============================================================
+    if enable_shape:
+        extr.enableFeatureClassByName("shape")
 
     img_types = {"Original": {}}
 
@@ -427,7 +495,7 @@ def case_features(case_id: str,
         return {"case_id": case_id, "empty_tumor_mask": 1}
 
     # Stabilisation CT
-    ct_np = np.clip(ct_np, -150.0, 250.0).astype(np.float32)
+    ct_np = np.clip(ct_np, -200.0, 300.0).astype(np.float32)
     
     # Topologie
     ipsi, contra = split_breasts(breast_np, tumor_np)
@@ -500,15 +568,29 @@ def case_features(case_id: str,
             
             pet_sitk_cropped.SetOrigin(new_origin)
             ct_sitk_cropped.SetOrigin(new_origin)
-            
-            pet_extr = _make_extractor(
+
+            pet_tumor_extr = _make_extractor(
                 pet_binwidth_suv,
-                glcm_distances=[1,2,3]
+                glcm_distances=[1],
+                enable_shape=True
             )
-    
-            ct_extr = _make_extractor(
+            
+            ct_tumor_extr = _make_extractor(
                 ct_binwidth_hu,
-                glcm_distances=[1,2,3]
+                glcm_distances=[1],
+                enable_shape=True
+            )
+            
+            pet_ring_extr = _make_extractor(
+                pet_binwidth_suv,
+                glcm_distances=[1],
+                enable_shape=False
+            )
+            
+            ct_ring_extr = _make_extractor(
+                ct_binwidth_hu,
+                glcm_distances=[1],
+                enable_shape=False
             )
 
             # ============================================================
@@ -528,7 +610,7 @@ def case_features(case_id: str,
             
             # ---------- PET ----------
             feats.update(_pyrad_ring_features(
-                pet_extr,
+                pet_tumor_extr,
                 pet_sitk_cropped,
                 tumor_np,
                 pet_sitk_cropped,
@@ -536,7 +618,7 @@ def case_features(case_id: str,
             ))
             
             feats.update(_pyrad_ring_features(
-                pet_extr,
+                pet_ring_extr,
                 pet_sitk_cropped,
                 ring05,
                 pet_sitk_cropped,
@@ -544,7 +626,7 @@ def case_features(case_id: str,
             ))
             
             feats.update(_pyrad_ring_features(
-                pet_extr,
+                pet_ring_extr,
                 pet_sitk_cropped,
                 ring10,
                 pet_sitk_cropped,
@@ -553,7 +635,7 @@ def case_features(case_id: str,
             
             # ---------- CT ----------
             feats.update(_pyrad_ring_features(
-                ct_extr,
+                ct_tumor_extr,
                 ct_sitk_cropped,
                 tumor_np,
                 ct_sitk_cropped,
@@ -561,7 +643,7 @@ def case_features(case_id: str,
             ))
             
             feats.update(_pyrad_ring_features(
-                ct_extr,
+                ct_ring_extr,
                 ct_sitk_cropped,
                 ring05,
                 ct_sitk_cropped,
@@ -569,7 +651,7 @@ def case_features(case_id: str,
             ))
             
             feats.update(_pyrad_ring_features(
-                ct_extr,
+                ct_ring_extr,
                 ct_sitk_cropped,
                 ring10,
                 ct_sitk_cropped,
