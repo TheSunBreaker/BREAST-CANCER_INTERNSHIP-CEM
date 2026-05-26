@@ -101,7 +101,7 @@ def isotropic_and_align_to_pet(
     resampler_pet.SetOutputSpacing(iso_spacing)
     resampler_pet.SetOutputOrigin(pet_img.GetOrigin())
     resampler_pet.SetOutputDirection(pet_img.GetDirection())
-    resampler_pet.SetInterpolator(sitk.sitkLinear)
+    resampler_pet.SetInterpolator(sitk.sitkBSpline)
     resampler_pet.SetDefaultPixelValue(0.0)
 
     pet_iso = resampler_pet.Execute(pet_img)
