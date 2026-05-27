@@ -21,9 +21,9 @@ NOUVEAUTÉS V3 :
   ============================================================================
 LA STRATÉGIE TEMPORELLE ABSOLUE :
 1. Détecte le "Grand Saut" (Injection du produit de contraste).
-2. T0 (Baseline) = L'image juste avant le saut.
-3. T1 (Wash-in) = L'image juste après le saut (Ancrage Temporel T_inj).
-4. T2, T3... = Images les plus proches de (T_inj + 90s), (T_inj + 180s), etc.
+2. T_0 (Baseline) = L'image juste avant le saut.
+3. T_1 (Wash-in) = L'image juste après le saut (Ancrage Temporel T_inj).
+4. T_2, T_3... = Images les plus proches de (T_1 + 90s), (T_2 + 180s), etc.
 =============================================================================
 
 
