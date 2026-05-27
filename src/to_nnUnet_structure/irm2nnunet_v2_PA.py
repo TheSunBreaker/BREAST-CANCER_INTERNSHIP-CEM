@@ -160,68 +160,93 @@ def load_mamamia_database(file_path: str) -> dict:
 
 def select_best_dce_phases_jump_anchored(timeline: list, num_channels: int, nb_files_available: int) -> list:
     """
-    L'Algorithme Hybride (Le "Grand Saut" + Cohérence Temporelle Absolue).
+    MATRICE DE SECOURS MULTI-NIVEAUX (V4 Robustesse Clinique).
     
-    Logique biologique :
-    1. Trouve le plus grand écart de temps (qui correspond au moment de l'injection).
-    2. T0 (Baseline sans contraste) = L'image juste AVANT ce saut.
-    3. T1 (Wash-in) = L'image juste APRÈS ce saut (Ancrage T_inj).
-    4. T_X (Plateau/Wash-out) = Les images les plus proches de (T_inj + 90s), (T_inj + 180s).
+    Cette fonction détermine les index optimaux des volumes 3D à extraire pour nnU-Net.
+    Elle implémente la détection du moment de l'injection (Ancrage) et projette les
+    cibles physiologiques standards du cancer du sein (90s, 180s, 360s).
+    
+    LOGIQUE DE SÉCURITÉ EN 3 NIVEAUX :
+    Niveau 1 : Détection et validation du saut temporel (Pause d'injection détectée).
+    Niveau 2 : Secours pour acquisition continue (Uniforme) -> Ancrage forcé à l'index 1.
+    Niveau 3 : Mode BLIND total -> Répartition heuristique de secours.
     """
-    # --- MODE BLIND (Répartition Heuristique) ---
+    
+    # ==========================================
+    # NIVEAU 3 : MODE BLIND (Parachute de secours)
+    # ==========================================
     if not timeline or len(timeline) < 2:
-        print("    [MODE BLIND ACTIVÉ] Aucune métadonnée. Répartition heuristique de l'examen.")
-
-        # SÉCURITÉ : Empêche la division par zéro si on ne demande qu'une seule phase (T0)
+        print("    [ALERT - SÉCURITÉ NIVEAU 3] Timeline vide ou insuffisante. Bascule en mode BLIND.")
         if num_channels == 1:
             return [0]
-          
         if nb_files_available <= num_channels:
-            # Si on a moins de fichiers que de canaux demandés, on complète avec le dernier fichier
+            # Remplissage par duplication de la dernière phase si pas assez de fichiers
             return list(range(nb_files_available)) + [nb_files_available-1] * (num_channels - nb_files_available)
         else:
-            # Si on a beaucoup de fichiers, on répartit équitablement du début à la fin de l'examen
+            # Échantillonnage géométrique régulier sur l'ensemble de l'examen
             return [int(i * (nb_files_available - 1) / (num_channels - 1)) for i in range(num_channels)]
 
-    # Sécurité : On s'assure de ne pas chercher des index au-delà des fichiers réellement sur le disque
+    # Alignement défensif entre la timeline des métadonnées et les fichiers physiques réels
     max_idx = min(len(timeline), nb_files_available)
     valid_timeline = np.array(timeline[:max_idx])
     
-    # --- 1. DÉTECTION DU SAUT (INJECTION) ---
-    # np.diff calcule l'écart entre chaque élément consécutif
+    # Calcul des deltas de temps entre chaque phase consécutive
     diffs = np.diff(valid_timeline)
-    # np.argmax trouve l'index du plus grand écart
-    jump_idx_before = int(np.argmax(diffs))
-    jump_idx_after = jump_idx_before + 1
     
-    # L'heure exacte (en secondes depuis le début de l'examen) où le contraste arrive
-    t_injection = valid_timeline[jump_idx_after]
+    if len(diffs) == 0:
+        return [0] * num_channels
 
+    max_gap = float(np.max(diffs))
+    median_gap = float(np.median(diffs))
+    
+    # ==========================================
+    # NIVEAU 1 & 2 : RECHERCHE DE L'ANCRAGE D'INJECTION
+    # ==========================================
+    # Seuil clinique de validation du saut : le plus grand écart doit être au moins 1.5 fois
+    # plus grand que l'écart médian de la séquence. Sinon, l'acquisition est considérée comme continue.
+    if max_gap > (1.5 * median_gap):
+        # Niveau 1 : Le saut est validé mathématiquement
+        jump_idx_before = int(np.argmax(diffs))
+        jump_idx_after = jump_idx_before + 1
+        print(f"    [SÉCURITÉ NIVEAU 1] Saut d'injection détecté : Phase {jump_idx_before} -> Phase {jump_idx_after} (Delta: {max_gap:.1f}s)")
+    else:
+        # Niveau 2 : Acquisition continue (Deltas uniformes, ex: 15s, 15s, 15s...)
+        # Heuristique standard de l'état de l'art : On assume que la toute première phase (index 0) 
+        # est le masque à blanc (Baseline) et que l'injection produit ses effets à l'index 1.
+        jump_idx_before = 0
+        jump_idx_after = 1
+        print(f"    [SÉCURITÉ NIVEAU 2] Acquisition continue détectée (Pas de saut temporel). Ancrage forcé : Phase 0 -> Phase 1")
+
+    # Définition du temps d'ancrage absolu (Le T = 0 biologique du produit de contraste)
+    t_washin_initial = valid_timeline[jump_idx_after]
     selected_indices = []
     
-    # --- CANAL 0 : BASELINE (Image sans contraste) ---
+    # --- CANAL 0 : BASELINE (Image anatomique pure sans contraste) ---
     selected_indices.append(jump_idx_before)
     
-    # --- CANAL 1 : WASH-IN IMMEDIAT (Si on a demandé au moins 2 canaux) ---
+    # --- CANAL 1 : WASH-IN IMMÉDIAT (Arrivée initiale du produit) ---
     if num_channels >= 2:
         selected_indices.append(jump_idx_after)
         
-    # --- CANAUX SUIVANTS : CIBLES CINÉTIQUES POST-INJECTION ---
-    # Cibles standards pour le cancer du sein : 90s (Plateau), 180s (Wash-out précoce)
+    # --- CANAUX SUIVANTS : COHÉRENCE CINÉTIQUE PHYSIOLOGIQUE ---
+    # Jalons BI-RADS standards : +90s (Pic précoce / Plateau), +180s (Wash-out / Phase tardive)
     target_deltas_post_inj = [90.0, 180.0, 360.0] 
     
     for i in range(2, num_channels):
-        # On calcule le temps absolu visé
-        cible_absolue = t_injection + target_deltas_post_inj[i - 2]
+        cible_absolue = t_washin_initial + target_deltas_post_inj[i - 2]
         
-        # On cherche l'image la plus proche de cette cible, MAIS uniquement parmi les images 
-        # situées APRÈS l'injection (pour éviter que l'algo ne recule dans le temps)
+        # Restriction causale : On ne cherche que parmi les phases situées APRÈS l'injection
+        # pour empêcher le modèle de reculer accidentellement dans le temps en cas de bruit
         temps_futurs = valid_timeline[jump_idx_after:]
         best_future_idx = int(np.argmin(np.abs(temps_futurs - cible_absolue)))
         
-        # On replace l'index relatif dans le repère global de la liste complète
         vrai_index = jump_idx_after + best_future_idx
         selected_indices.append(vrai_index)
+
+    # --- AUDIT QUALITÉ ET LOGGING DES DUPLICATIONS ---
+    # On vérifie si l'hétérogénéité du protocole a forcé l'algorithme à dupliquer des canaux
+    if len(selected_indices) != len(set(selected_indices)):
+        print(f"    [NOTE CLINIQUE] Profil basse résolution temporelle détecté. Canaux dupliqués pour la stabilité nnU-Net.")
 
     return selected_indices
 
@@ -403,7 +428,6 @@ if __name__ == "__main__":
     if args.mode == "MAMAMIA" and not args.csv:
         parser.error("Le flag --csv est obligatoire avec le mode MAMAMIA.")
         
-    # N'oublie pas d'ajouter les nouveaux paramètres à l'appel de ta fonction !
     extract_dce_to_nnunet_flat(
         subjects_dir=args.src, 
         nnunet_root=args.nnunet, 
