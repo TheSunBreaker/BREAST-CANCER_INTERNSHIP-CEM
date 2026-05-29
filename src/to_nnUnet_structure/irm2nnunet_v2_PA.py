@@ -19,13 +19,13 @@ NOUVEAUTÉS V3 :
     -> BLIND     : Mode survie si aucune métadonnée n'est disponible (heuristique).
 ==
   ============================================================================
-LA STRATÉGIE TEMPORELLE ABSOLUE :
-1. Détecte le "Grand Saut" (Injection du produit de contraste).
-2. T_0 (Baseline) = L'image juste avant le saut.
-3. T_1 (Wash-in) = L'image juste après le saut (Ancrage Temporel T_inj).
-4. T_2, T_3... = Images les plus proches de (T_1 + 90s), (T_2 + 180s), etc.
-=============================================================================
-
+  LA STRATÉGIE TEMPORELLE ABSOLUE :
+  1. Détecte le "Grand Saut" (Injection du produit de contraste).
+  2. T_0 (Baseline) = L'image juste avant le saut.
+  3. T_1 (Wash-in) = L'image juste après le saut (Ancrage Temporel T_inj).
+  4. T_2 = Image la plus proche de (T_inj + 90s)  [Pic précoce / Plateau]
+  5. T_3 = Image la plus proche de (T_inj + 180s) [Wash-out tardif]
+# =============================================================================
 
 
 Pré-requis :
@@ -241,6 +241,12 @@ def select_best_dce_phases_jump_anchored(timeline: list, num_channels: int, nb_f
         best_future_idx = int(np.argmin(np.abs(temps_futurs - cible_absolue)))
         
         vrai_index = jump_idx_after + best_future_idx
+      
+        # Si l'index choisi est inférieur ou égal au canal précédent, on force 
+        # l'avancement d'au moins 1 frame (si disponible sur le disque)
+        if selected_indices and vrai_index <= selected_indices[-1]:
+            vrai_index = min(selected_indices[-1] + 1, nb_files_available - 1)
+            
         selected_indices.append(vrai_index)
 
     # --- AUDIT QUALITÉ ET LOGGING DES DUPLICATIONS ---
@@ -290,6 +296,19 @@ def extract_dce_to_nnunet_flat(
 
     valid_subjects = 0
 
+    # --- NOUVEAU : LISTES DE SUIVI DES ERREURS ---
+    erreurs_normalisation = []
+    erreurs_masque = []
+    patients_exclus_tnbc = []
+
+    # --- NOUVEAU : INITIALISATION DU LOG GLOBAL ---
+    rapport_global = [
+        "==================================================",
+        f" RAPPORT D'EXTRACTION DCE -> nnU-Net",
+        f" Mode: {mode} | Canaux visés: {num_channels}",
+        "==================================================\n"
+    ]
+
     for subj in subjects:
         subj_path = os.path.join(subjects_dir, subj)
         imgs_dir = os.path.join(subj_path, "imgs") # On pointe toujours vers la Baseline par défaut !
@@ -324,6 +343,8 @@ def extract_dce_to_nnunet_flat(
             # on passe silencieusement au patient suivant.
             if triple_neg_only and not is_tnbc:
                 print(f"    -> [FILTRE CLINIQUE] Patient ignoré (Statut Hormonal non Triple Négatif).")
+                rapport_global.append(f"[FILTRÉ] {subj} | Exclu (Non Triple Négatif)")
+                patients_exclus_tnbc.append(subj)
                 continue
                 
             if not timeline:
@@ -369,6 +390,8 @@ def extract_dce_to_nnunet_flat(
             normalize_dce_patient(aligned_phases_paths, chemins_sorties)
         except Exception as e:
             print(f"   [ERREUR] Normalisation échouée pour {subj} : {e}")
+            rapport_global.append(f"!!!!!!!!!!!!![ERREUR] {subj} | Normalisation échouée : {e}!!!!!!!!!!!!!")
+            erreurs_normalisation.append(subj)
             continue
 
         # --- ÉTAPE 3 : Alignement du Masque (SEULEMENT EN ENTRAÎNEMENT) ---
@@ -376,6 +399,8 @@ def extract_dce_to_nnunet_flat(
             fichiers_masques = sorted(glob.glob(os.path.join(mask_dir, "*.nii.gz")))
             if not fichiers_masques:
                 print(f"   [ERREUR] Masque introuvable au moment de l'alignement pour {subj}.")
+                rapport_global.append(f"!!!!!!!!!!!!![ERREUR] {subj} | Masque introuvable.!!!!!!!!!!!!!")
+                erreurs_masque.append(subj)
                 continue
                 
             dst_mask = os.path.join(labelsTr_dir, f"{subj}.nii.gz")
@@ -385,6 +410,9 @@ def extract_dce_to_nnunet_flat(
                 out_path=dst_mask,
                 is_mask=True
             )
+
+        # --- NOUVEAU : AJOUT AU LOG DES BONS PATIENTS ---
+        rapport_global.append(f"[SUCCÈS] {subj} | Index: {selected_indices} | Temps réels: {temps_reels}")
 
         valid_subjects += 1
         print("    -> Normalisation et Alignement OK.")
@@ -402,9 +430,38 @@ def extract_dce_to_nnunet_flat(
         with open(os.path.join(nnunet_raw, "dataset.json"), "w") as f:
             json.dump(dataset_json, f, indent=4)
 
-    print("\n" + "="*50)
-    print(f" STRUCTURATION TERMINÉE ! Patients correctement exportés : {valid_subjects}")
-    print("="*50)
+    # --- NOUVEAU : BILAN STATISTIQUE DES ERREURS DANS LE LOG ---
+    rapport_global.append("\n==================================================")
+    rapport_global.append("               BILAN DES ERREURS                  ")
+    rapport_global.append("==================================================")
+    
+    rapport_global.append(f"Erreurs de Normalisation : {len(erreurs_normalisation)}")
+    if erreurs_normalisation:
+        rapport_global.append(f"   -> Patients : {', '.join(erreurs_normalisation)}")
+        
+    rapport_global.append(f"Erreurs de Masques manquants : {len(erreurs_masque)}")
+    if erreurs_masque:
+        rapport_global.append(f"   -> Patients : {', '.join(erreurs_masque)}")
+
+    # --- AJOUTE CE BLOC DANS LE BILAN FINAL ---
+    rapport_global.append(f"Patients exclus par le filtre TNBC : {len(patients_exclus_tnbc)}")
+    if patients_exclus_tnbc:
+        rapport_global.append(f"   -> Patients : {', '.join(patients_exclus_tnbc)}")
+
+    # --- NOUVEAU : SAUVEGARDE DU RAPPORT TEXTUEL ---
+    rapport_global.append("\n==================================================")
+    rapport_global.append(f" STRUCTURATION TERMINÉE ! Patients valides : {valid_subjects}")
+    rapport_global.append("==================================================")
+    
+    # On le sauvegarde à la racine du projet nnU-Net pour le retrouver facilement
+    chemin_rapport = os.path.join(nnunet_root, f"rapport_extraction_{channel_prefix}_{mode}.txt")
+    with open(chemin_rapport, "w", encoding="utf-8") as f:
+        f.write("\n".join(rapport_global))
+
+    print(f"\n==================================================")
+    print(f" PIPELINE TERMINÉ ! Patients valides : {valid_subjects}")
+    print(f" -> Rapport d'extraction sauvegardé ici : {chemin_rapport}") # <-- INFO CONSOLE
+    print(f"==================================================")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Orchestrateur IRM DCE Physiologique vers nnU-Net.")
