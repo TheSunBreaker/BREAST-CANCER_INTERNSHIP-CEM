@@ -300,6 +300,7 @@ def extract_dce_to_nnunet_flat(
     erreurs_normalisation = []
     erreurs_masque = []
     patients_exclus_tnbc = []
+    exclus_hors_base = []
 
     # --- NOUVEAU : INITIALISATION DU LOG GLOBAL ---
     rapport_global = [
@@ -333,6 +334,13 @@ def extract_dce_to_nnunet_flat(
         if mode == "INGESTEUR":
             log_path = os.path.join(imgs_dir, "DCE_temporal_log.txt")
             timeline = parse_ingesteur_log(log_path)
+            # Si le fichier log de notre ingesteur est absent ou vide pour ce patient
+            if not timeline:
+                print(f"    [REJET STRICT] Log temporel introuvable pour {subj}. Exclusion du dataset.")
+                rapport_global.append(f"[EXCLUSION] {subj} | Fichier DCE_temporal_log.txt manquant ou vide.")
+                exclus_hors_base.append(subj)
+                continue # Interruption immédiate du traitement pour ce sujet
+              
         elif mode == "MAMAMIA":
             patient_info = mamamia_db.get(subj, {})
             timeline = patient_info.get("timeline", [])
@@ -348,7 +356,11 @@ def extract_dce_to_nnunet_flat(
                 continue
                 
             if not timeline:
-                print(f"    [ALERTE] Patient {subj} absent de la base clinique. Bascule en mode Aveugle.")
+                print(f"    [REJET STRICT] Patient {subj} absent du CSV MAMA-MIA. Exclusion du dataset.")
+                rapport_global.append(f"[EXCLUSION] {subj} | Absent des enregistrements du CSV de référence.")
+                exclus_hors_base.append(subj)
+                continue # Interruption immédiate du traitement pour ce sujet
+              
         # Si mode == "BLIND", timeline reste volontairement vide [] pour déclencher la sécurité.
 
         # === SÉLECTION PHYSIOLOGIQUE DES PHASES ===
@@ -435,15 +447,22 @@ def extract_dce_to_nnunet_flat(
     rapport_global.append("               BILAN DES ERREURS                  ")
     rapport_global.append("==================================================")
     
+    # 1. Suivi des pannes techniques de traitement de l'image
     rapport_global.append(f"Erreurs de Normalisation : {len(erreurs_normalisation)}")
     if erreurs_normalisation:
-        rapport_global.append(f"   -> Patients : {', '.join(erreurs_normalisation)}")
+        rapport_global.append(f"   -> Patients concernés : {', '.join(erreurs_normalisation)}")
         
+    # 2. Suivi des pannes d'annotations (Vérité terrain manquante pour l'entraînement)
     rapport_global.append(f"Erreurs de Masques manquants : {len(erreurs_masque)}")
     if erreurs_masque:
-        rapport_global.append(f"   -> Patients : {', '.join(erreurs_masque)}")
+        rapport_global.append(f"   -> Patients concernés : {', '.join(erreurs_masque)}")
 
-    # --- AJOUTE CE BLOC DANS LE BILAN FINAL ---
+    # 3. Suivi du contrôle qualité de cohérence de la base de données (Nouveau !)
+    rapport_global.append(f"Patients exclus car absents de la base (Pas de tracking temporel) : {len(exclus_hors_base)}")
+    if exclus_hors_base:
+        rapport_global.append(f"   -> Identifiants des exclus : {', '.join(exclus_hors_base)}")
+
+    # 4. Suivi du tri triple neg
     rapport_global.append(f"Patients exclus par le filtre TNBC : {len(patients_exclus_tnbc)}")
     if patients_exclus_tnbc:
         rapport_global.append(f"   -> Patients : {', '.join(patients_exclus_tnbc)}")
