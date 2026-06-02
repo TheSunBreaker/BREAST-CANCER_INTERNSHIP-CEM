@@ -337,7 +337,7 @@ def do_predict(dataset_id: str, config: str, fold: str, input_folder: str, outpu
         "-f"
     ] + folds + [
         "-tr", trainer,
-        "-save_probabilities"
+        "--save_probabilities"
     ]
 
     run_command(cmd, env_dict)
