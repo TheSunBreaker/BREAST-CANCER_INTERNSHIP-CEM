@@ -8,12 +8,13 @@
 Rôle :
   Parcourt la base de données PET/CT générée par l'Ingesteur V6, cible 
   UNIQUEMENT les examens de Baseline, et utilise TotalSegmentator (modèle breasts)
-  pour générer un masque binaire GLOBAL des seins.
+  pour générer un masque binaire GLOBAL des seins, mais aussi des zones à éviter qui sont autre chose que des seins.
 
 Nouveautés V3 :
   - Support Colab natif (API et CLI).
   - Mode hybride (API/CLI) restauré avec le sous-modèle 'breasts'.
   - Fusion intelligente : Combine le sein gauche et droit en un seul NIfTI.
+  - Extrait toutes les segmentations de corps afin de pouvoir construire la zone non sein
   - Cohérence Spatiale : Utilise STRICTEMENT SimpleITK.
 ===============================================================================
 """
@@ -110,6 +111,39 @@ def run_totalseg_cli(ct_file: Path, output_mask: Path, device: str, fast: bool, 
     
     merge_breast_masks_sitk(tmp_dir, output_mask)
 
+def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, device: str):
+    """Lance TS (tâche totale) en mode FAST, et ne conserve que le bouclier."""
+    tmp_total_dir = patient_organs_dir / "tmp_total"
+    if tmp_total_dir.exists():
+        shutil.rmtree(tmp_total_dir)
+    tmp_total_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"    -> Extraction des boucliers (cœur, sternum, côtes) en mode FAST...")
+    
+    # On force le mode fast pour ne pas alourdir les calculs
+    if mode == "api":
+        totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="total", fast=True, ml=True)
+    else:
+        cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "total", "--fast", "--device", device]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+    # Filtrage : On ne déplace QUE les organes qui nous intéressent vers le dossier final du patient
+    fichiers_a_garder = ["heart.nii.gz", "sternum.nii.gz"]
+    
+    for fichier in fichiers_a_garder:
+        src = tmp_total_dir / fichier
+        if src.exists():
+            shutil.move(str(src), str(patient_organs_dir / fichier))
+            
+    # On récupère aussi toutes les côtes (TotalSegmentator les sépare par défaut)
+    for ribs_file in tmp_total_dir.glob("*ribs*.nii.gz"):
+        shutil.move(str(ribs_file), str(patient_organs_dir / ribs_file.name))
+
+    # On supprime les 100 autres organes générés pour libérer l'espace disque
+    shutil.rmtree(tmp_total_dir, ignore_errors=True)
+    print(f"    -> Boucliers sauvegardés dans {patient_organs_dir.name}/")
+# --- FIN DE L'AJOUT ZONE 2 ---
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -130,6 +164,13 @@ def main():
     )
 
     parser.add_argument(
+        "--output_organs_root", 
+        type=Path, 
+        default=Path("./Base_PETCT_Organs"), 
+        help="Dossier de sauvegarde pour les boucliers (cœur, sternum, côtes)."
+    )
+
+    parser.add_argument(
         "--mode",
         choices=["api", "cli"],
         default="cli", 
@@ -144,6 +185,7 @@ def main():
     args = parser.parse_args()
 
     args.output_root.mkdir(parents=True, exist_ok=True)
+    args.output_organs_root.mkdir(parents=True, exist_ok=True)
     
     if args.mode == "api" and not API_AVAILABLE:
         print("API TotalSegmentator non détectée.")
@@ -188,6 +230,16 @@ def main():
             
             shutil.rmtree(tmp_dir, ignore_errors=True)
             print(f"  [SUCCÈS] Masque final sauvegardé : {output_mask.name}")
+
+            # Création du sous-dossier patient pour ses organes (ex: Base_PETCT_Organs/PATIENT_01/)
+            patient_organs_dir = args.output_organs_root / patient_id
+            patient_organs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Si le cœur n'est pas déjà présent, on lance l'extraction du bouclier
+            if not (patient_organs_dir / "heart.nii.gz").exists() or args.overwrite:
+                extract_shield_organs(ct_file, patient_organs_dir, args.mode, args.device)
+            else:
+                print(f"    -> [SKIP] Boucliers déjà existants.")
 
         except subprocess.CalledProcessError as e:
             print(f"  [ÉCHEC ] {patient_id} : Crash de TotalSegmentator (CLI).")
