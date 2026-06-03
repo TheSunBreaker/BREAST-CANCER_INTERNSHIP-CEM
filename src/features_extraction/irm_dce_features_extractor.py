@@ -77,60 +77,6 @@ def _crop_to_mask_bbox(arrs: List[np.ndarray], mask: np.ndarray, spacing_zyx: Tu
     slicer = tuple(slice(lo[d], hi[d]) for d in range(3))
     return [a[slicer] for a in arrs], slicer
 
-def _ring_by_distance(
-    tumor_mask: np.ndarray,
-    spacing_zyx: Tuple[float,float,float],
-    inner_mm: float,
-    outer_mm: float
-) -> np.ndarray:
-    """
-    =========================================================================
-    Construction IBSI-compatible d'une couronne péritumorale
-    =========================================================================
-
-    Principe :
-    ----------
-    Utilise une distance euclidienne réelle (EDT = Euclidean Distance Transform)
-    afin de construire des anneaux métriquement exacts en millimètres.
-
-    Pourquoi c'est supérieur à la dilatation morphologique :
-    --------------------------------------------------------
-    - indépendant de la connectivité voxel
-    - invariant à la rotation
-    - robuste aux résolutions anisotropes
-    - conforme aux pratiques radiomics IBSI
-
-    spacing :
-    ---------
-    spacing NumPy -> ordre ZYX
-    """
-
-    if tumor_mask.sum() == 0
-        return np.zeros_like(tumor_mask, dtype=bool)
-
-    # ------------------------------------------------------------
-    # Distance euclidienne réelle depuis la tumeur
-    # ------------------------------------------------------------
-
-    outside = ~tumor_mask
-
-    dist_mm = distance_transform_edt(
-        outside,
-        sampling=spacing_zyx
-    )
-
-    # ------------------------------------------------------------
-    # Couronne contrainte au sein
-    # ------------------------------------------------------------
-
-    ring = (
-        (~tumor_mask) &
-        (dist_mm > inner_mm) &
-        (dist_mm <= outer_mm)
-    )
-
-    return ring
-
 # =====================================================================
 # 1. OUTILS DE RECHERCHE ET CONFIGURATION DES TÂCHES
 # =====================================================================
@@ -170,31 +116,59 @@ def find_multiphase_tasks_nnunet(imagesTr_dir: Path, labelsTr_dir: Path) -> List
 # 2. ALGORITHMES DE CONTOURING PÉRITUMORAL (SIMPLEITK)
 # =====================================================================
 
-def binary_peri_ring(mask_img: sitk.Image, dilation_mm: float) -> sitk.Image:
+def _ring_by_distance(
+    tumor_mask: np.ndarray,
+    spacing_zyx: Tuple[float,float,float],
+    inner_mm: float,
+    outer_mm: float
+) -> np.ndarray:
     """
-    Génère une zone péritumorale en forme de couronne ("donut") autour de la lésion.
-    Calcul : Anneau = Dilatation(Tumeur, X_mm) - Tumeur_Initiale.
+    =========================================================================
+    Construction IBSI-compatible d'une couronne péritumorale
+    =========================================================================
+
+    Principe :
+    ----------
+    Utilise une distance euclidienne réelle (EDT = Euclidean Distance Transform)
+    afin de construire des anneaux métriquement exacts en millimètres.
+
+    Pourquoi c'est supérieur à la dilatation morphologique :
+    --------------------------------------------------------
+    - indépendant de la connectivité voxel
+    - invariant à la rotation
+    - robuste aux résolutions anisotropes
+    - conforme aux pratiques radiomics IBSI
+
+    spacing :
+    ---------
+    spacing NumPy -> ordre ZYX
     """
-    spacing = mask_img.GetSpacing()
-    # Conversion de la distance physique (mm) en nombre de voxels équivalents par dimension
-    radius_vox = [int(math.ceil(dilation_mm / s)) for s in spacing]
 
-    # Sécurité : On s'assure d'obtenir un masque binaire strict [0, 1]
-    bin_mask = sitk.BinaryThreshold(mask_img, lowerThreshold=1, upperThreshold=1,
-                                    insideValue=1, outsideValue=0)
+    if tumor_mask.sum() == 0:
+        return np.zeros_like(tumor_mask, dtype=bool)
 
-    # Dilatation morphologique 3D isotrope via noyau sphérique
-    dilate = sitk.BinaryDilateImageFilter()
-    dilate.SetKernelType(sitk.sitkBall)
-    dilate.SetKernelRadius(radius_vox)
-    dilate.SetForegroundValue(1)
-    
-    dilated = dilate.Execute(bin_mask)
-    
-    # Soustraction pour obtenir exclusivement la couronne externe péritumorale
-    peri = sitk.Subtract(dilated, bin_mask)
-    peri = sitk.Clamp(peri, lowerBound=0, upperBound=1)  
-    return peri
+    # ------------------------------------------------------------
+    # Distance euclidienne réelle depuis la tumeur
+    # ------------------------------------------------------------
+
+    outside = ~tumor_mask
+
+    dist_mm = distance_transform_edt(
+        outside,
+        sampling=spacing_zyx
+    )
+
+    # ------------------------------------------------------------
+    # Couronne contrainte au sein
+    # ------------------------------------------------------------
+
+    ring = (
+        (~tumor_mask) &
+        (dist_mm > inner_mm) &
+        (dist_mm <= outer_mm)
+    )
+
+    return ring
 
 # =====================================================================
 # 3. MOTEUR DE CONFIGURATION PYRADIOMICS
@@ -457,7 +431,8 @@ def extract_mri_features_and_flatten(
         "n_patients_analysed_input": unique_patients_count,
         "n_rows_computed_long": len(results),
         "n_errors_encountered": len(errors),
-        "peritumoral_ring_distance_mm": peri_mm,
+        "peritumoral_inner_radius_mm": peri_inner_mm,
+        "peritumoral_outer_radius_mm": peri_outer_mm,
         "pyradiomics_binWidth_used": bin_width
     }
     with open(meta_path, "w", encoding="utf-8") as f:
