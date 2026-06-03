@@ -128,7 +128,11 @@ def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, de
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
     # Filtrage : On ne déplace QUE les organes qui nous intéressent vers le dossier final du patient
-    fichiers_a_garder = ["heart.nii.gz", "sternum.nii.gz"]
+    fichiers_a_garder = [
+        "heart.nii.gz", 
+        "sternum.nii.gz", 
+        "costal_cartilages.nii.gz"  # <-- L'ajout indispensable ici
+    ]
     
     for fichier in fichiers_a_garder:
         src = tmp_total_dir / fichier
@@ -136,8 +140,8 @@ def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, de
             shutil.move(str(src), str(patient_organs_dir / fichier))
             
     # On récupère aussi toutes les côtes (TotalSegmentator les sépare par défaut)
-    for ribs_file in tmp_total_dir.glob("*ribs*.nii.gz"):
-        shutil.move(str(ribs_file), str(patient_organs_dir / ribs_file.name))
+    for rib_file in tmp_total_dir.glob("*rib*.nii.gz"):
+        shutil.move(str(rib_file), str(patient_organs_dir / rib_file.name))
 
     # On supprime les 100 autres organes générés pour libérer l'espace disque
     shutil.rmtree(tmp_total_dir, ignore_errors=True)
@@ -214,37 +218,54 @@ def main():
         ct_file = ct_files[0]
         output_mask = args.output_root / f"{patient_id}_breast_mask.nii.gz"
 
-        if output_mask.exists() and not args.overwrite:
+        print(f"\n[{patient_id}] (Source: {ct_file.name}) -> {args.device.upper()}")
+
+        # =========================================================
+        # TÂCHE 1 : MASQUE MAMMAIRE (BASELINE)
+        # =========================================================
+        if not output_mask.exists() or args.overwrite:
+
+            print(f" [RUN ] {patient_id} Segmentation mammaire en cours...")
+
+            try:
+                tmp_dir_breast = args.output_root / f"{patient_id}_tmp_breast"
+                
+                if args.mode == "api":
+                    run_totalseg_api(ct_file, output_mask, args.fast, tmp_dir_breast)
+                else:
+                    run_totalseg_cli(ct_file, output_mask, args.device, args.fast, tmp_dir_breast)
+                
+                shutil.rmtree(tmp_dir_breast, ignore_errors=True)
+                print(f"    -> [SUCCÈS] {patient_id} Masque sauvegardé : {output_mask.name}")
+
+            except subprocess.CalledProcessError as e:
+                print(f"    -> [ÉCHEC] {patient_id} Crash de TotalSegmentator (Seins) : {e}.")
+            except Exception as e:
+                print(f"    -> [ÉCHEC] {patient_id} Erreur inattendue (Seins) : {e}")
+
+        else:          
             print(f"[SKIP  ] {patient_id} : Masque mammaire déjà existant.")
-            continue
+        
 
-        print(f"[RUN   ] {patient_id} (Source: {ct_file.name}) -> {args.device.upper()}")
+        # =========================================================
+        # TÂCHE 2 : BOUCLIERS ANATOMIQUES (CŒUR, STERNUM, CÔTES)
+        # =========================================================
+        patient_organs_dir = args.output_organs_root / patient_id
+        patient_organs_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
-            tmp_dir = args.output_root / f"{patient_id}_tmp_ts"
-            
-            if args.mode == "api":
-                run_totalseg_api(ct_file, output_mask, args.fast, tmp_dir)
-            else:
-                run_totalseg_cli(ct_file, output_mask, args.device, args.fast, tmp_dir)
-            
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            print(f"  [SUCCÈS] Masque final sauvegardé : {output_mask.name}")
-
-            # Création du sous-dossier patient pour ses organes (ex: Base_PETCT_Organs/PATIENT_01/)
-            patient_organs_dir = args.output_organs_root / patient_id
-            patient_organs_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Si le cœur n'est pas déjà présent, on lance l'extraction du bouclier
-            if not (patient_organs_dir / "heart.nii.gz").exists() or args.overwrite:
+        # On vérifie si les pièces maîtresses du bouclier sont déjà là
+        # (Si le coeur et le sternum y sont, on considère que le dossier est complet)
+        bouclier_complet = (patient_organs_dir / "heart.nii.gz").exists() and \
+                           (patient_organs_dir / "sternum.nii.gz").exists() and \
+                           (patient_organs_dir / "costal_cartilages.nii.gz").exists() # <-- Ajout ici
+      
+        if not bouclier_complet or args.overwrite:
+            try:
                 extract_shield_organs(ct_file, patient_organs_dir, args.mode, args.device)
-            else:
-                print(f"    -> [SKIP] Boucliers déjà existants.")
-
-        except subprocess.CalledProcessError as e:
-            print(f"  [ÉCHEC ] {patient_id} : Crash de TotalSegmentator (CLI).")
-        except Exception as e:
-            print(f"  [ÉCHEC ] {patient_id} : Erreur inattendue -> {e}")
+            except Exception as e:
+                print(f"    -> [ÉCHEC] {patient_id} Erreur lors de l'extraction des boucliers : {e}")
+        else:
+            print(f"  [SKIP] {patient_id} Boucliers anatomiques déjà existants.")
 
     print("\n=== SEGMENTATION AUTOMATIQUE DES SEINS TERMINÉE ===")
 
