@@ -195,10 +195,10 @@ def main():
     patients = [p for p in args.input_root.iterdir() if p.is_dir()]
     
     if not patients:
-        print(f"❌ Aucun dossier patient trouvé dans {args.input_root}")
+        print(f"Aucun dossier patient trouvé dans {args.input_root}")
         return
 
-    print(f"🔍 {len(patients)} dossier(s) patient analysé(s) pour la Baseline (Mode {args.mode.upper()}).\n")
+    print(f"{len(patients)} dossier(s) patient analysé(s) pour la Baseline (Mode {args.mode.upper()}).\n")
 
     for patient_dir in patients:
         patient_id = patient_dir.name
