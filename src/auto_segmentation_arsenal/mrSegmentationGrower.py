@@ -3,26 +3,27 @@
 
 """
 ===============================================================================
-  Script d'Expansion des Masques Mammaires via Region Growing (SimpleITK) - V5
+  Script d'Expansion des Masques Mammaires via Region Growing (SimpleITK) - V6
 ===============================================================================
 Rôle :
-  Prend les masques générés par TotalSegmentator (qui sous-estiment la zone)
+  Prend les masques générés par TotalSegmentator (qui sous-estiment la zone mammaire)
   et les étend en utilisant l'intensité (HU) réelle du CT-scan de la patiente.
-  L'algorithme s'arrête de lui-même lorsqu'il rencontre l'air ou l'os/muscle.
+  L'algorithme s'arrête de lui-même lorsqu'il rencontre l'air ou nos boucliers.
 
-Nouveautés de la V5 (Résilience Anatomique Totale) :
-  - NORMALISATION LPS : Force l'alignement des images sur le repère anatomique 
-    du patient. Le script est désormais 100% insensible au fait que la patiente 
-    soit allongée sur le dos ou sur le ventre. L'axe Y max pointe TOUJOURS vers le dos.
+Nouveautés de la V6 (Le Bouclier IA Infaillible) :
+  - BOUCLIER 1 (Anatomique DL) : Abandon du seuillage osseux (vulnérable aux fuites 
+    3D par les cartilages, le cou et le diaphragme). Remplacement par une "Zone 
+    Interdite" stricte combinant les masques TotalSegmentator (Cœur, Sternum, Côtes). 
+    Verrouille définitivement le médiastin tout en permettant à la croissance d'aller 
+    chercher les tumeurs profondes collées contre la paroi pré-pectorale.
 
 Héritage des versions précédentes :
-  - BOUCLIER 1 (Physique - V4) : Seuillage des os (>200 HU) pour interdire 
-    l'accès à la cage thoracique (protège le cœur/poumons), et qu'on ferme pour en faire un bunker interdit, mais permet d'aller 
-    chercher les tumeurs profondes collées aux côtes.
-  - BOUCLIER 2 (Géométrique - V4) : Mur virtuel arrière avec marge de 30 voxels 
-    pour autoriser la profondeur mais bloquer la fuite latérale vers la graisse du dos.
-  - Fermeture Morphologique (V3) : Comble les trous internes de graisse.
-  - Rapport de Log détaillé (V2) : Suivi des succès et erreurs en fichier texte.
+  - NORMALISATION LPS (V5) : Force l'alignement des images sur le repère anatomique 
+    du patient. Le script est 100% insensible à la position (ventre ou dos).
+  - BOUCLIER 2 (Géométrique - V4) : Mur virtuel arrière (avec marge de profondeur) 
+    pour couper la fuite latérale vers la graisse sous-cutanée du dos.
+  - Fermeture Morphologique (V3) : Comble les trous internes (hétérogénéité de la graisse).
+  - Rapport de Log détaillé (V2) : Suivi des succès, skips et erreurs en fichier texte.
 ===============================================================================
 """
 
