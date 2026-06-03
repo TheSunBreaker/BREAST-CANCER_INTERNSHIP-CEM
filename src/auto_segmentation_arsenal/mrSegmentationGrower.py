@@ -80,11 +80,11 @@ def expand_breast_mask(ct_path: Path, mask_path: Path, organs_dir: Path, output_
             forbidden_mask_np = np.logical_or(forbidden_mask_np, org_np > 0)
             
     # Chargement de toutes les côtes générées
-    for ribs_path in organs_dir.glob("*ribs*.nii.gz"):
-        ribs_img = sitk.ReadImage(str(ribs_path))
-        ribs_img = sitk.DICOMOrient(ribs_img, 'LPS')
-        ribs_np = sitk.GetArrayFromImage(ribs_img)
-        forbidden_mask_np = np.logical_or(forbidden_mask_np, ribs_np > 0)
+    for rib_path in organs_dir.glob("*rib*.nii.gz"):
+        rib_img = sitk.ReadImage(str(rib_path))
+        rib_img = sitk.DICOMOrient(rib_img, 'LPS')
+        rib_np = sitk.GetArrayFromImage(rib_img)
+        forbidden_mask_np = np.logical_or(forbidden_mask_np, rib_np > 0)
 
     # Dilatation du bouclier (3 voxels) pour sceller parfaitement les espaces intercostaux
     forbidden_sitk = sitk.GetImageFromArray(forbidden_mask_np.astype(np.uint8))
