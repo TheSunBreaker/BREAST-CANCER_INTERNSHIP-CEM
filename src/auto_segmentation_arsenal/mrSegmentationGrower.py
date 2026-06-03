@@ -70,8 +70,8 @@ def expand_breast_mask(ct_path: Path, mask_path: Path, organs_dir: Path, output_
     
     forbidden_mask_np = np.zeros_like(ct_np, dtype=bool)
     
-    # Chargement du coeur et du sternum
-    for organe in ["heart.nii.gz", "sternum.nii.gz"]:
+    # Chargement du coeur, du sternum et du cartilage intercostal
+    for organe in ["heart.nii.gz", "sternum.nii.gz", "costal_cartilages.nii.gz"]:
         organe_path = organs_dir / organe
         if organe_path.exists():
             org_img = sitk.ReadImage(str(organe_path))
@@ -180,7 +180,7 @@ def generate_log_report(output_dir: Path, stats: dict, total_masks: int):
     
     with open(log_file, "w", encoding="utf-8") as f:
         f.write("====================================================\n")
-        f.write("    RAPPORT D'EXPANSION DES MASQUES MAMMAIRES (V5)\n")
+        f.write("    RAPPORT D'EXPANSION DES MASQUES MAMMAIRES (V6)\n")
         f.write("====================================================\n")
         f.write(f"Date et heure de fin : {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
         f.write(f"Total de masques analysés : {total_masks}\n\n")
@@ -206,7 +206,7 @@ def generate_log_report(output_dir: Path, stats: dict, total_masks: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extension des masques via Region Growing (LPS Indestructible V5).")
+    parser = argparse.ArgumentParser(description="Extension des masques via Region Growing (LPS Indestructible V6).")
     
     # Arguments d'arborescence
     parser.add_argument("--ct_dir", type=Path, default=Path("./Base_PETCT"), 
