@@ -34,7 +34,8 @@ import SimpleITK as sitk
 import numpy as np
 import scipy.ndimage as ndi
 
-def expand_breast_mask(ct_path: Path, mask_path: Path, output_path: Path, multiplier: float, iterations: int):
+def expand_breast_mask(ct_path: Path, mask_path: Path, organs_dir: Path, output_path: Path, multiplier: float, iterations: int):
+  
     """
     Exécute la croissance de région sur un scanner CT à partir d'un masque existant.
     Retourne un tuple : (Statut_booléen, Message_ou_Raison)
@@ -62,31 +63,35 @@ def expand_breast_mask(ct_path: Path, mask_path: Path, output_path: Path, multip
     mask_np = sitk.GetArrayFromImage(mask_img)
 
     # ---------------------------------------------------------
-    # 3. BOUCLIER 1 : Le Bloc Thoracique (Pont Cartilagineux)
+    # 3. BOUCLIER 1 : La Muraille Anatomique (Deep Learning)
     # ---------------------------------------------------------
-    print("  -> Création du bouclier thoracique massif (Fermeture des cartilages)...")
-    import scipy.ndimage as ndi # (Assure-toi que cet import est bien en haut de ton script)
+    print("  -> Création de la muraille anatomique (via masques TotalSegmentator)...")
     
-    # Étape A : Seuillage des os (on garde 130 HU)
-    bone_mask_np = (ct_np > 130).astype(np.uint8)
+    forbidden_mask_np = np.zeros_like(ct_np, dtype=bool)
     
-    # Étape B : Le Pont (Fermeture Morphologique 2D)
-    # On utilise un "noyau" plat de 15x15 voxels (environ 1.5 cm) uniquement sur 
-    # les axes X et Y. Cela va forcer les côtes à se connecter au sternum
-    # par-dessus le cartilage, fermant ainsi la cage thoracique à l'avant.
-    struct = np.ones((1, 15, 15), dtype=bool) 
-    bone_closed = ndi.binary_closing(bone_mask_np, structure=struct)
-    
-    # Étape C : Le Remplissage Magique
-    # Maintenant que l'anneau osseux est scellé par la fermeture morphologique,
-    # la fonction fill_holes va emprisonner le cœur et les poumons à 100%.
-    bone_filled = np.zeros_like(bone_closed)
-    for z in range(bone_filled.shape[0]):
-        bone_filled[z] = ndi.binary_fill_holes(bone_closed[z])
-        
-    # Étape D : Application du Mur
-    # On transforme tout l'intérieur de la cage thoracique en air.
-    ct_np[bone_filled == 1] = -1000
+    # Chargement du coeur et du sternum
+    for organe in ["heart.nii.gz", "sternum.nii.gz"]:
+        organe_path = organs_dir / organe
+        if organe_path.exists():
+            org_img = sitk.ReadImage(str(organe_path))
+            org_img = sitk.DICOMOrient(org_img, 'LPS')
+            org_np = sitk.GetArrayFromImage(org_img)
+            forbidden_mask_np = np.logical_or(forbidden_mask_np, org_np > 0)
+            
+    # Chargement de toutes les côtes générées
+    for ribs_path in organs_dir.glob("*ribs*.nii.gz"):
+        ribs_img = sitk.ReadImage(str(ribs_path))
+        ribs_img = sitk.DICOMOrient(ribs_img, 'LPS')
+        ribs_np = sitk.GetArrayFromImage(ribs_img)
+        forbidden_mask_np = np.logical_or(forbidden_mask_np, ribs_np > 0)
+
+    # Dilatation du bouclier (3 voxels) pour sceller parfaitement les espaces intercostaux
+    forbidden_sitk = sitk.GetImageFromArray(forbidden_mask_np.astype(np.uint8))
+    forbidden_sitk = sitk.BinaryDilate(forbidden_sitk, [3, 3, 3])
+    forbidden_mask_np_dilated = sitk.GetArrayFromImage(forbidden_sitk)
+
+    # Application de la Zone Interdite
+    ct_np[forbidden_mask_np_dilated == 1] = -1000
 
     # ---------------------------------------------------------
     # 4. BOUCLIER 2 : Le Mur Virtuel (Anti-fuite dos - V4/V3)
@@ -207,6 +212,10 @@ def main():
                         help="Dossier contenant les sous-dossiers patients avec les CT initiaux.")
     parser.add_argument("--mask_dir", type=Path, default=Path("./Base_PETCT_BreastMasks"), 
                         help="Dossier contenant les masques TotalSegmentator générés à l'étape précédente.")
+
+    parser.add_argument("--organs_dir", type=Path, default=Path("./Base_PETCT_Organs"), 
+                        help="Dossier contenant les boucliers TS (coeur, sternum, côtes).")
+  
     parser.add_argument("--output_dir", type=Path, default=Path("./Base_PETCT_BreastMasks_Expanded"), 
                         help="Dossier de sauvegarde des nouveaux masques.")
     
@@ -249,9 +258,15 @@ def main():
             
         ct_file = ct_files[0]
         output_mask_path = args.output_dir / f"{patient_id}_breast_mask_expanded.nii.gz"
+
+        patient_organs_dir = args.organs_dir / patient_id
+        if not patient_organs_dir.exists():
+            print(f"  [SKIP] Dossier des boucliers (organes) introuvable.")
+            execution_stats["skipped"].append((patient_id, "Dossier organes TS manquant"))
+            continue
         
         try:
-            success, message = expand_breast_mask(ct_file, mask_path, output_mask_path, args.multiplier, args.iterations)
+            success, message = expand_breast_mask(ct_file, mask_path, patient_organs_dir, output_mask_path, args.multiplier, args.iterations)
             if success:
                 print(f"  [OK] {message}")
                 execution_stats["success"].append(patient_id)
