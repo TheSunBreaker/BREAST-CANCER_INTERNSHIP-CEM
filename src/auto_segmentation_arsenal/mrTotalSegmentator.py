@@ -17,6 +17,8 @@ Nouveautés V3 :
   - Extrait toutes les segmentations de corps afin de pouvoir construire la zone non sein
   - Cohérence Spatiale : Utilise STRICTEMENT SimpleITK.
 ===============================================================================
+
+  ATTENTION, TOTALSEGMENTATOR V2 MINIMUM NECESSAIRE POUR SEGMENTER LE CARTILAGE INTERCOSTAL
 """
 
 import argparse
