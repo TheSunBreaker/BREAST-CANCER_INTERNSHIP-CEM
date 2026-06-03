@@ -291,8 +291,8 @@ def _process_one_phase_worker(args) -> Tuple[str, str, Dict[str, float], Optiona
         # 6. Extraction PyRadiomics triple zone
         extractor = make_extractor(binWidth=extractor_params["binWidth"])
         feats_tumor = execute_extract(extractor, img_cropped, tumor_sitk_crop, "tumor")
-        feats_ring05 = execute_extract(extractor, img_cropped, ring05_sitk_crop, "peri_0to5mm")
-        feats_ring10 = execute_extract(extractor, img_cropped, ring10_sitk_crop, "peri_5to10mm")
+        feats_ring05 = execute_extract(extractor, img_cropped, ring05_sitk_crop, f"peri_0to{int(peri_inner_mm)}mm")
+        feats_ring10 = execute_extract(extractor, img_cropped, ring10_sitk_crop, f"peri_{int(peri_inner_mm)}to{int(peri_outer_mm)}mm")
         
         # Assemblage final de la ligne de résultats
         merged_features = {"subject_id": subject_id, "phase_id": phase_id}
