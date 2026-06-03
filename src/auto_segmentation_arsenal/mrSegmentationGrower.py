@@ -17,7 +17,7 @@ Nouveautés de la V5 (Résilience Anatomique Totale) :
 
 Héritage des versions précédentes :
   - BOUCLIER 1 (Physique - V4) : Seuillage des os (>200 HU) pour interdire 
-    l'accès à la cage thoracique (protège le cœur/poumons) mais permet d'aller 
+    l'accès à la cage thoracique (protège le cœur/poumons), et qu'on ferme pour en faire un bunker interdit, mais permet d'aller 
     chercher les tumeurs profondes collées aux côtes.
   - BOUCLIER 2 (Géométrique - V4) : Mur virtuel arrière avec marge de 30 voxels 
     pour autoriser la profondeur mais bloquer la fuite latérale vers la graisse du dos.
@@ -32,6 +32,7 @@ import random
 from datetime import datetime
 import SimpleITK as sitk
 import numpy as np
+import scipy.ndimage as ndi
 
 def expand_breast_mask(ct_path: Path, mask_path: Path, output_path: Path, multiplier: float, iterations: int):
     """
@@ -61,16 +62,31 @@ def expand_breast_mask(ct_path: Path, mask_path: Path, output_path: Path, multip
     mask_np = sitk.GetArrayFromImage(mask_img)
 
     # ---------------------------------------------------------
-    # 3. BOUCLIER 1 : Le Bouclier Osseux (Seuillage - V4)
+    # 3. BOUCLIER 1 : Le Bloc Thoracique (Pont Cartilagineux)
     # ---------------------------------------------------------
-    print("  -> Création du bouclier osseux (protection cage thoracique)...")
-    # Tout ce qui est supérieur à 200 HU est considéré comme de l'os.
-    bone_mask = ct_np > 200
+    print("  -> Création du bouclier thoracique massif (Fermeture des cartilages)...")
+    import scipy.ndimage as ndi # (Assure-toi que cet import est bien en haut de ton script)
     
-    # On transforme l'os en air (-1000 HU) en mémoire pour stopper la croissance.
-    # L'algorithme va ramper le long des côtes, englober les tumeurs profondes, 
-    # mais ne pourra jamais entrer vers le cœur.
-    ct_np[bone_mask] = -1000
+    # Étape A : Seuillage des os (on garde 130 HU)
+    bone_mask_np = (ct_np > 130).astype(np.uint8)
+    
+    # Étape B : Le Pont (Fermeture Morphologique 2D)
+    # On utilise un "noyau" plat de 15x15 voxels (environ 1.5 cm) uniquement sur 
+    # les axes X et Y. Cela va forcer les côtes à se connecter au sternum
+    # par-dessus le cartilage, fermant ainsi la cage thoracique à l'avant.
+    struct = np.ones((1, 15, 15), dtype=bool) 
+    bone_closed = ndi.binary_closing(bone_mask_np, structure=struct)
+    
+    # Étape C : Le Remplissage Magique
+    # Maintenant que l'anneau osseux est scellé par la fermeture morphologique,
+    # la fonction fill_holes va emprisonner le cœur et les poumons à 100%.
+    bone_filled = np.zeros_like(bone_closed)
+    for z in range(bone_filled.shape[0]):
+        bone_filled[z] = ndi.binary_fill_holes(bone_closed[z])
+        
+    # Étape D : Application du Mur
+    # On transforme tout l'intérieur de la cage thoracique en air.
+    ct_np[bone_filled == 1] = -1000
 
     # ---------------------------------------------------------
     # 4. BOUCLIER 2 : Le Mur Virtuel (Anti-fuite dos - V4/V3)
