@@ -131,7 +131,7 @@ def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, de
     fichiers_a_garder = [
         "heart.nii.gz", 
         "sternum.nii.gz", 
-        "costal_cartilages.nii.gz"  # <-- L'ajout indispensable ici
+        "costal_cartilages.nii.gz"
     ]
     
     for fichier in fichiers_a_garder:
@@ -257,7 +257,7 @@ def main():
         # (Si le coeur et le sternum y sont, on considère que le dossier est complet)
         bouclier_complet = (patient_organs_dir / "heart.nii.gz").exists() and \
                            (patient_organs_dir / "sternum.nii.gz").exists() and \
-                           (patient_organs_dir / "costal_cartilages.nii.gz").exists() # <-- Ajout ici
+                           (patient_organs_dir / "costal_cartilages.nii.gz").exists()
       
         if not bouclier_complet or args.overwrite:
             try:
