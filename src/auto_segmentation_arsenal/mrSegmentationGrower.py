@@ -88,12 +88,28 @@ def expand_breast_mask(ct_path: Path, mask_path: Path, organs_dir: Path, output_
 
     # Dilatation du bouclier (3 voxels) pour sceller parfaitement les espaces intercostaux
     forbidden_sitk = sitk.GetImageFromArray(forbidden_mask_np.astype(np.uint8))
-    forbidden_sitk = sitk.BinaryDilate(forbidden_sitk, [3, 3, 3])
-    forbidden_mask_np_dilated = sitk.GetArrayFromImage(forbidden_sitk)
+  
+    # ---------------------------------------------------------
+    # DILATATION ASYMÉTRIQUE (Le Bouclier Intelligent)
+    # ---------------------------------------------------------
+    # On crée une boîte de 5x5x5 voxels remplie de "Vrai" (1)
+    struct = np.ones((5, 5, 5), dtype=bool)
+    
+    # RAPPEL LPS -> NumPy : L'ordre est (Z, Y, X).
+    # L'axe Y (index 1) va de l'avant (Ventre = 0) vers l'arrière (Dos = Max).
+    # On veut interdire au bouclier d'avancer vers le ventre (où se trouve le sein/la tumeur).
+    # On désactive donc la moitié "avant" de notre boîte de dilatation (les index Y 0 et 1).
+    struct[:, 0:2, :] = False 
+    
+    # Résultat : L'élément structurant est un "demi-cube". Il va dilater les côtes
+    # vers la gauche, la droite, le haut, le bas, et vers l'arrière, MAIS la face
+    # avant restera parfaitement intacte au contact de la tumeur.
+    
+    print("  -> Dilatation asymétrique du bouclier (protection de la bordure avant)...")
+    forbidden_mask_np_dilated = ndi.binary_dilation(forbidden_mask_np, structure=struct)
 
-    # Application de la Zone Interdite
-    ct_np[forbidden_mask_np_dilated == 1] = -1000
-
+    # Application de la Zone Interdite sur le CT
+    ct_np[forbidden_mask_np_dilated] = -1000
     # ---------------------------------------------------------
     # 4. BOUCLIER 2 : Le Mur Virtuel (Anti-fuite dos - V4/V3)
     # ---------------------------------------------------------
