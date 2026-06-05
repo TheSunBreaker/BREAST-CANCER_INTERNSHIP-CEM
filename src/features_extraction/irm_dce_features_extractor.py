@@ -393,8 +393,10 @@ def extract_mri_features_and_flatten(
             for phase in sorted_phases:
                 if phase == "0000":
                     continue  # On ne calcule pas le delta de la baseline contre elle-même
+
+                sorted_phases_features = sorted(list(feature_names_raw))
                     
-                for feat in sorted_phases_features := sorted(list(feature_names_raw)):
+                for feat in sorted_phases_features :
                     col_baseline = f"phase0000_{feat}"
                     col_current  = f"phase{phase}_{feat}"
                     
