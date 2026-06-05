@@ -36,49 +36,13 @@ except ImportError:
     API_AVAILABLE = False
 
 
-def merge_breast_masks_sitk(tmp_dir: Path, output_mask: Path):
-    """
-    Lit tous les masques générés par TotalSegmentator (gauche/droit ou unifié),
-    les binarise (valeurs > 0), les fusionne via un OU logique, 
-    et sauvegarde le résultat avec SimpleITK.
-    """
-    breast_files = list(tmp_dir.glob("*breast*.nii.gz"))
-    
-    # Si le modèle n'a pas mis 'breast' dans le nom, on prend tout ce qui est .nii.gz 
-    # (car le dossier temp est censé être exclusif à cette tâche)
-    if not breast_files:
-        breast_files = list(tmp_dir.glob("*.nii.gz"))
 
-    if not breast_files:
-        raise RuntimeError("Aucun masque généré par TotalSegmentator. (FOV trop petit ou erreur modèle).")
-
-    merged_np = None
-    ref_img = None
-
-    for f in breast_files:
-        img = sitk.ReadImage(str(f))
-        # On binarise : tout ce qui est > 0 devient True (couvre le cas où TS sort des valeurs 1 et 2)
-        arr = sitk.GetArrayFromImage(img) > 0
-        
-        if merged_np is None:
-            merged_np = arr
-            ref_img = img
-        else:
-            merged_np = np.logical_or(merged_np, arr)
-
-    merged_img = sitk.GetImageFromArray(merged_np.astype(np.uint8))
-    merged_img.CopyInformation(ref_img)
-
-    sitk.WriteImage(merged_img, str(output_mask))
-    print(f"    -> Fusion de {len(breast_files)} structure(s) réussie.")
-
-
-def run_totalseg_api(ct_file: Path, output_mask: Path, fast: bool, tmp_dir: Path):
+def run_totalseg_api(ct_file: Path, output_root: Path, patient_id: str, fast: bool, tmp_dir: Path):
     """Lance TotalSegmentator via l'API Python native vers le dossier temporaire."""
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-
+  
     totalsegmentator(
         input=str(ct_file),
         output=str(tmp_dir),
@@ -87,10 +51,13 @@ def run_totalseg_api(ct_file: Path, output_mask: Path, fast: bool, tmp_dir: Path
         ml=True
     )
     
-    merge_breast_masks_sitk(tmp_dir, output_mask)
+    # Déplacement direct des masques individuels au lieu de les fusionner
+    for mask_file in tmp_dir.glob("*.nii.gz"):
+        output_path = output_root / f"{patient_id}_{mask_file.name}"
+        shutil.move(str(mask_file), str(output_path))
 
 
-def run_totalseg_cli(ct_file: Path, output_mask: Path, device: str, fast: bool, tmp_dir: Path):
+def run_totalseg_cli(ct_file: Path, output_root: Path, device: str, patient_id: str, fast: bool, tmp_dir: Path):
     """Lance TotalSegmentator via ligne de commande vers le dossier temporaire."""
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
@@ -111,7 +78,10 @@ def run_totalseg_cli(ct_file: Path, output_mask: Path, device: str, fast: bool, 
                    #stdout=subprocess.DEVNULL,
                    stderr=subprocess.STDOUT)
     
-    merge_breast_masks_sitk(tmp_dir, output_mask)
+    # Déplacement direct des masques individuels au lieu de les fusionner
+    for mask_file in tmp_dir.glob("*.nii.gz"):
+        output_path = output_root / f"{patient_id}_{mask_file.name}"
+        shutil.move(str(mask_file), str(output_path))
 
 def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, device: str, muscles_seg: bool = False):
     """Lance TS (tâche totale) en mode FAST, et ne conserve que le bouclier."""
@@ -158,12 +128,12 @@ def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, de
         shutil.move(str(rib_file), str(patient_organs_dir / rib_file.name))
 
     # On récupère également les poumons 
-    for rib_file in tmp_total_dir.glob("*lung*.nii.gz"):
-        shutil.move(str(rib_file), str(patient_organs_dir / rib_file.name))
+    for lung_file in tmp_total_dir.glob("*lung*.nii.gz"):
+        shutil.move(str(lung_file), str(patient_organs_dir / lung_file.name))
 
     # Egalement les verèbres
-    for rib_file in tmp_total_dir.glob("*vertebrae*.nii.gz"):
-        shutil.move(str(rib_file), str(patient_organs_dir / rib_file.name))
+    for vert_file in tmp_total_dir.glob("*vertebrae*.nii.gz"):
+        shutil.move(str(vert_file), str(patient_organs_dir / vert_file.name))
   
 
     # On supprime les autres organes générés pour libérer l'espace disque
@@ -247,7 +217,7 @@ def main():
         # =========================================================
         # TÂCHE 1 : MASQUE MAMMAIRE (BASELINE)
         # =========================================================
-        if not output_mask.exists() or args.overwrite:
+        if not list(args.output_root.glob(f"{patient_id}_*breast*.nii.gz")) or args.overwrite:
 
             print(f" [RUN ] {patient_id} Segmentation mammaire en cours...")
 
