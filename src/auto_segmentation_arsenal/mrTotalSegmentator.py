@@ -113,27 +113,39 @@ def run_totalseg_cli(ct_file: Path, output_mask: Path, device: str, fast: bool, 
     
     merge_breast_masks_sitk(tmp_dir, output_mask)
 
-def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, device: str):
+def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, device: str, muscles_seg: bool = False):
     """Lance TS (tâche totale) en mode FAST, et ne conserve que le bouclier."""
     tmp_total_dir = patient_organs_dir / "tmp_total"
     if tmp_total_dir.exists():
         shutil.rmtree(tmp_total_dir)
     tmp_total_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"    -> Extraction des boucliers (cœur, sternum, côtes) en mode FAST...")
+    print(f"    -> Extraction des boucliers (cœur, sternum, poumon, côtes, vertèbres, clavicules, cartilage inter-costal, muscles pectoraux, ..., etc.) en mode FAST...")
     
     # On force le mode fast pour ne pas alourdir les calculs
     if mode == "api":
+        # La tâche 'total' contient la majorité de nos organes boucliers voulus. Mais pour avoir les pectoraux, il nous faut lancer la tâche 'abdominal_muscles'
         totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="total", fast=True, ml=True)
+        # Si on veut la segmentation musculaire aussi. 
+        if muscles_seg : totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="abdominal_muscles", fast=True, ml=True)
     else:
         cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "total", "--fast", "--device", device]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        # Si on veut la segmentation musculaire aussi. 
+        if muscles_seg :
+          cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "abdominal_muscles", "--fast", "--device", device]
+          subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            
 
     # Filtrage : On ne déplace QUE les organes qui nous intéressent vers le dossier final du patient
     fichiers_a_garder = [
         "heart.nii.gz", 
         "sternum.nii.gz", 
-        "costal_cartilages.nii.gz"
+        "costal_cartilages.nii.gz",
+        "clavicula_left.nii.gz",
+        "clavicula_right.nii.gz",
+        "pectoralis_major_left.nii.gz",
+        "pectoralis_major_right.nii.gz"
     ]
     
     for fichier in fichiers_a_garder:
@@ -145,7 +157,16 @@ def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, de
     for rib_file in tmp_total_dir.glob("*rib*.nii.gz"):
         shutil.move(str(rib_file), str(patient_organs_dir / rib_file.name))
 
-    # On supprime les 100 autres organes générés pour libérer l'espace disque
+    # On récupère également les poumons 
+    for rib_file in tmp_total_dir.glob("*lung*.nii.gz"):
+        shutil.move(str(rib_file), str(patient_organs_dir / rib_file.name))
+
+    # Egalement les verèbres
+    for rib_file in tmp_total_dir.glob("*vertebrae*.nii.gz"):
+        shutil.move(str(rib_file), str(patient_organs_dir / rib_file.name))
+  
+
+    # On supprime les autres organes générés pour libérer l'espace disque
     shutil.rmtree(tmp_total_dir, ignore_errors=True)
     print(f"    -> Boucliers sauvegardés dans {patient_organs_dir.name}/")
 # --- FIN DE L'AJOUT ZONE 2 ---
@@ -185,6 +206,7 @@ def main():
 
     parser.add_argument("--device", default="gpu", help="Matériel: gpu, gpu:0... ou cpu (Défaut: gpu)")
     parser.add_argument("--fast", action="store_true", help="Mode rapide (Recommandé si CPU)")
+    parser.add_argument("--muscles_seg", action="store_true", help="Récupérer la segmentation des muscles également (attention, tâche lourde)")
     parser.add_argument("--overwrite", action="store_true", help="Écrase les masques déjà existants")
     parser.add_argument("--ct-suffix", default="_TDM_", help="Marqueur du fichier CT (Défaut: _TDM_)")
 
@@ -250,7 +272,7 @@ def main():
         
 
         # =========================================================
-        # TÂCHE 2 : BOUCLIERS ANATOMIQUES (CŒUR, STERNUM, CÔTES)
+        # TÂCHE 2 : BOUCLIERS ANATOMIQUES (CŒUR, STERNUM, CÔTES, etc.)
         # =========================================================
         patient_organs_dir = args.output_organs_root / patient_id
         patient_organs_dir.mkdir(parents=True, exist_ok=True)
@@ -263,7 +285,7 @@ def main():
       
         if not bouclier_complet or args.overwrite:
             try:
-                extract_shield_organs(ct_file, patient_organs_dir, args.mode, args.device)
+                extract_shield_organs(ct_file, patient_organs_dir, args.mode, args.device, args.muscles_seg)
             except Exception as e:
                 print(f"    -> [ÉCHEC] {patient_id} Erreur lors de l'extraction des boucliers : {e}")
         else:
