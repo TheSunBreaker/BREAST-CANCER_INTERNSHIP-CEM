@@ -48,7 +48,7 @@ def run_totalseg_api(ct_file: Path, output_root: Path, patient_id: str, fast: bo
         output=str(tmp_dir),
         task="breasts",
         fast=fast,
-        ml=True
+        ml=False
     )
     
     # Déplacement direct des masques individuels au lieu de les fusionner
@@ -95,15 +95,17 @@ def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, de
     # On force le mode fast pour ne pas alourdir les calculs
     if mode == "api":
         # La tâche 'total' contient la majorité de nos organes boucliers voulus. Mais pour avoir les pectoraux, il nous faut lancer la tâche 'abdominal_muscles'
-        totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="total", fast=True, ml=True)
+        totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="total", fast=True, ml=False)
         # Si on veut la segmentation musculaire aussi. 
-        if muscles_seg : totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="abdominal_muscles", fast=True, ml=True)
+        # ATTENTION : La tâche musculaire ne supporte pas le mode fast
+        if muscles_seg : totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="abdominal_muscles", fast=False, ml=False)
     else:
         cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "total", "--fast", "--device", device]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         # Si on veut la segmentation musculaire aussi. 
         if muscles_seg :
-          cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "abdominal_muscles", "--fast", "--device", device]
+          # ATTENTION : La tâche musculaire ne supporte pas le mode fast
+          cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "abdominal_muscles", "--device", device]
           subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             
 
@@ -252,6 +254,10 @@ def main():
         bouclier_complet = (patient_organs_dir / "heart.nii.gz").exists() and \
                            (patient_organs_dir / "sternum.nii.gz").exists() and \
                            (patient_organs_dir / "costal_cartilages.nii.gz").exists()
+
+        # --- NOUVEAU : On exige les pectoraux si l'argument est actif ---
+        if args.muscles_seg:
+            bouclier_complet = bouclier_complet and (patient_organs_dir / "pectoralis_major_left.nii.gz").exists()
       
         if not bouclier_complet or args.overwrite:
             try:
