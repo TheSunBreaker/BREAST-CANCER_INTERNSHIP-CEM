@@ -95,18 +95,27 @@ def extract_shield_organs(ct_file: Path, patient_organs_dir: Path, mode: str, de
     # On force le mode fast pour ne pas alourdir les calculs
     if mode == "api":
         # La tâche 'total' contient la majorité de nos organes boucliers voulus. Mais pour avoir les pectoraux, il nous faut lancer la tâche 'abdominal_muscles'
+        print("-------------> Segmentation totale : Début...")
         totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="total", fast=True, ml=False)
+        print("-------------> Segmentation totale terminée.")
         # Si on veut la segmentation musculaire aussi. 
         # ATTENTION : La tâche musculaire ne supporte pas le mode fast
-        if muscles_seg : totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="abdominal_muscles", fast=False, ml=False)
+        if muscles_seg : 
+          print("-------------> Segmentation muscles : Début...")
+          totalsegmentator(input=str(ct_file), output=str(tmp_total_dir), task="abdominal_muscles", fast=False, ml=False)
+          print("-------------> Segmentation muscles terminée.")
     else:
         cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "total", "--fast", "--device", device]
+        print("-------------> Segmentation totale : Début...")
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        print("-------------> Segmentation totale terminée.")
         # Si on veut la segmentation musculaire aussi. 
         if muscles_seg :
           # ATTENTION : La tâche musculaire ne supporte pas le mode fast
+          print("-------------> Segmentation muscles : Début...")
           cmd = ["TotalSegmentator", "-i", str(ct_file), "-o", str(tmp_total_dir), "-ta", "abdominal_muscles", "--device", device]
           subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+          print("-------------> Segmentation muscles terminée.")
             
 
     # Filtrage : On ne déplace QUE les organes qui nous intéressent vers le dossier final du patient
