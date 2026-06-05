@@ -225,12 +225,12 @@ def main():
                 tmp_dir_breast = args.output_root / f"{patient_id}_tmp_breast"
                 
                 if args.mode == "api":
-                    run_totalseg_api(ct_file, output_mask, args.fast, tmp_dir_breast)
+                    run_totalseg_api(ct_file, args.output_root, patient_id, args.fast, tmp_dir_breast)
                 else:
-                    run_totalseg_cli(ct_file, output_mask, args.device, args.fast, tmp_dir_breast)
+                    run_totalseg_cli(ct_file, args.output_root, args.device, patient_id, args.fast, tmp_dir_breast)
                 
                 shutil.rmtree(tmp_dir_breast, ignore_errors=True)
-                print(f"    -> [SUCCÈS] {patient_id} Masque sauvegardé : {output_mask.name}")
+                print(f"    -> [SUCCÈS] {patient_id} Masques mammaires individuels sauvegardés.")
 
             except subprocess.CalledProcessError as e:
                 print(f"    -> [ÉCHEC] {patient_id} Crash de TotalSegmentator (Seins) : {e}.")
