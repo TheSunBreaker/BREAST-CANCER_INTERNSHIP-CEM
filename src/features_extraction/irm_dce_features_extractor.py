@@ -390,23 +390,31 @@ def extract_mri_features_and_flatten(
         if "0000" in sorted_phases and len(sorted_phases) > 1:
             print(f"[DYNAMIC DELTA] {len(sorted_phases)} phases detectees. Calcul des deltas cinetiques vs phase0000...")
             
+            # On prépare un dictionnaire pour stocker les nouvelles colonnes d'un coup
+            new_delta_cols = {}
+            
+            # OPTIMISATION CLINIQUE : On trie la liste des caractéristiques UNE SEULE FOIS 
+            # en dehors des boucles pour éviter des calculs redondants en mémoire
+            sorted_phases_features = sorted(list(feature_names_raw))
+            
             for phase in sorted_phases:
                 if phase == "0000":
-                    continue  # On ne calcule pas le delta de la baseline contre elle-même
-
-                sorted_phases_features = sorted(list(feature_names_raw))
+                    continue  
                     
-                for feat in sorted_phases_features :
+                for feat in sorted_phases_features:
                     col_baseline = f"phase0000_{feat}"
                     col_current  = f"phase{phase}_{feat}"
                     
                     if col_baseline in df_wide.columns and col_current in df_wide.columns:
-                        # 1. Delta Absolu : Capturation de la captation brute de signal (Perfusion pure)
-                        df_wide[f"delta_abs_p{phase}_vs_p0000_{feat}"] = df_wide[col_current] - df_wide[col_baseline]
-                        
-                        # 2. Delta Relatif : Ratio cinétique / Évolution normalisée (Modélisation Wash-in/Wash-out)
-                        # Utilisation d'un epsilon à 1e-8 pour immuniser le code contre les divisions par zéro
-                        df_wide[f"delta_rel_p{phase}_vs_p0000_{feat}"] = (df_wide[col_current] - df_wide[col_baseline]) / (df_wide[col_baseline] + 1e-8)
+                        # On stocke dans le dictionnaire temporaire
+                        new_delta_cols[f"delta_abs_p{phase}_vs_p0000_{feat}"] = df_wide[col_current] - df_wide[col_baseline]
+                        new_delta_cols[f"delta_rel_p{phase}_vs_p0000_{feat}"] = (df_wide[col_current] - df_wide[col_baseline]) / (df_wide[col_baseline] + 1e-8)
+            
+            # On fusionne toutes les nouvelles colonnes d'un seul coup (Idéal pour la fragmentation)
+            if new_delta_cols:
+                df_deltas = pd.DataFrame(new_delta_cols)
+                df_wide = pd.concat([df_wide, df_deltas], axis=1)        
+            
         else:
             print("[WARN] Impossible de generer les Delta-Radiomiques : Phase 0000 absente ou volume uniquement statique.")
 
