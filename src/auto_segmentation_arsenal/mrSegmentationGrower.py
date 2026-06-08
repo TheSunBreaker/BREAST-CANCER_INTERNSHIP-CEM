@@ -3,200 +3,176 @@
 
 """
 ===============================================================================
-  Script d'Expansion des Masques Mammaires via Region Growing (SimpleITK) - V6
+  Script de Création de ROI Mammaire (Soustraction Géométrique) - V6
 ===============================================================================
 Rôle :
-  Prend les masques générés par TotalSegmentator (qui sous-estiment la zone mammaire)
-  et les étend en utilisant l'intensité (HU) réelle du CT-scan de la patiente.
-  L'algorithme s'arrête de lui-même lorsqu'il rencontre l'air ou nos boucliers.
+  Remplace le "Region Growing" instable par une approche déterministe.
+  Dilate le masque initial des seins de manière contrôlée (vers la peau 
+  et vers les côtes), puis soustrait un bouclier anatomique massif pour 
+  garantir l'exclusion totale du thorax.
 
-Nouveautés de la V6 (Le Bouclier IA Infaillible) :
-  - BOUCLIER 1 (Anatomique DL) : Abandon du seuillage osseux (vulnérable aux fuites 
-    3D par les cartilages, le cou et le diaphragme). Remplacement par une "Zone 
-    Interdite" stricte combinant les masques TotalSegmentator (Cœur, Sternum, Côtes). 
-    Verrouille définitivement le médiastin tout en permettant à la croissance d'aller 
-    chercher les tumeurs profondes collées contre la paroi pré-pectorale.
-
-Héritage des versions précédentes :
-  - NORMALISATION LPS (V5) : Force l'alignement des images sur le repère anatomique 
-    du patient. Le script est 100% insensible à la position (ventre ou dos).
-  - BOUCLIER 2 (Géométrique - V4) : Mur virtuel arrière (avec marge de profondeur) 
-    pour couper la fuite latérale vers la graisse sous-cutanée du dos.
-  - Fermeture Morphologique (V3) : Comble les trous internes (hétérogénéité de la graisse).
-  - Rapport de Log détaillé (V2) : Suivi des succès, skips et erreurs en fichier texte.
+Nouveautés de la V6 :
+  - Fin du Region Growing basé sur l'intensité.
+  - Expansion Frontale Asymétrique : Force le masque à remplir les 40% de 
+    vide externe jusqu'à toucher la peau (limite de l'air).
+  - Soustraction de Bouclier IA : Utilise les pectoraux, côtes, cartilages 
+    et poumons générés par TotalSegmentator.
+  - Nettoyage par Composante Connexe : Élimine les îlots parasites.
 ===============================================================================
 """
 
 import argparse
 from pathlib import Path
-import random
 from datetime import datetime
 import SimpleITK as sitk
 import numpy as np
 import scipy.ndimage as ndi
 
-def expand_breast_mask(ct_path: Path, mask_path: Path, organs_dir: Path, output_path: Path, multiplier: float, iterations: int):
-  
+def get_body_mask(ct_np: np.ndarray) -> np.ndarray:
     """
-    Exécute la croissance de région sur un scanner CT à partir d'un masque existant.
+    Crée un masque plein du corps du patient (exclut l'air ambiant et la table du scanner).
+    """
+    # 1. Seuillage large (le corps humain est > -500 HU)
+    body_thresh = ct_np > -500
+    
+    # 2. Ignorer la table du scanner en ne gardant que le plus gros bloc connexe
+    labeled_body, num_features = ndi.label(body_thresh)
+    if num_features == 0:
+        return body_thresh
+        
+    sizes = ndi.sum(body_thresh, labeled_body, range(1, num_features + 1))
+    largest_label = np.argmax(sizes) + 1
+    body_mask = (labeled_body == largest_label)
+    
+    # 3. Remplissage des trous 2D pour avoir un corps complètement plein (poumons inclus)
+    for z in range(body_mask.shape[0]):
+        body_mask[z] = ndi.binary_fill_holes(body_mask[z])
+        
+    return body_mask
+
+def expand_and_sculpt_breast(ct_path: Path, mask_path: Path, organs_dir: Path, output_path: Path):
+    """
+    Applique la logique de dilatation asymétrique et soustraction géométrique.
     Retourne un tuple : (Statut_booléen, Message_ou_Raison)
     """
-    print(f"  [TRAITEMENT] Analyse de l'image en cours...")
+    print(f"  [TRAITEMENT] Chargement des images et alignement LPS...")
     
     # ---------------------------------------------------------
-    # 1. Chargement des images
+    # 1. Chargement et Normalisation LPS (Crucial pour la géométrie)
     # ---------------------------------------------------------
     ct_img = sitk.ReadImage(str(ct_path), sitk.sitkFloat32)
-    mask_img = sitk.ReadImage(str(mask_path), sitk.sitkUInt8)
+    breast_img = sitk.ReadImage(str(mask_path), sitk.sitkUInt8)
     
-    # ---------------------------------------------------------
-    # 2. NOUVEAUTÉ V5 : Standardisation de l'orientation en LPS
-    # ---------------------------------------------------------
-    # Cette étape lit le header DICOM/NIfTI et réorganise les pixels pour que
-    # l'axe X = Droite->Gauche, l'axe Y = Ventre->Dos, et l'axe Z = Pieds->Tête.
-    # C'est ce qui garantit l'immunité face aux positions Ventre/Dos.
-    print("  -> Normalisation de l'orientation dans l'espace patient (LPS)...")
     ct_img = sitk.DICOMOrient(ct_img, 'LPS')
-    mask_img = sitk.DICOMOrient(mask_img, 'LPS')
+    breast_img = sitk.DICOMOrient(breast_img, 'LPS')
     
-    # Extraction des matrices NumPy APRÈS alignement rigoureux
     ct_np = sitk.GetArrayFromImage(ct_img)
-    mask_np = sitk.GetArrayFromImage(mask_img)
+    breast_np = sitk.GetArrayFromImage(breast_img).astype(bool)
+
+    if not np.any(breast_np):
+        return False, "Le masque initial des seins est complètement vide."
 
     # ---------------------------------------------------------
-    # 3. BOUCLIER 1 : La Muraille Anatomique (Deep Learning)
+    # 2. Le Moule Corporel (Body Mask)
     # ---------------------------------------------------------
-    print("  -> Création de la muraille anatomique (via masques TotalSegmentator)...")
-    
-    forbidden_mask_np = np.zeros_like(ct_np, dtype=bool)
-    
-    # Chargement du coeur, du sternum et du cartilage intercostal
-    for organe in ["heart.nii.gz", "sternum.nii.gz", "costal_cartilages.nii.gz"]:
-        organe_path = organs_dir / organe
-        if organe_path.exists():
-            org_img = sitk.ReadImage(str(organe_path))
-            org_img = sitk.DICOMOrient(org_img, 'LPS')
-            org_np = sitk.GetArrayFromImage(org_img)
-            forbidden_mask_np = np.logical_or(forbidden_mask_np, org_np > 0)
-            
-    # Chargement de toutes les côtes générées
-    for rib_path in organs_dir.glob("*rib*.nii.gz"):
-        rib_img = sitk.ReadImage(str(rib_path))
-        rib_img = sitk.DICOMOrient(rib_img, 'LPS')
-        rib_np = sitk.GetArrayFromImage(rib_img)
-        forbidden_mask_np = np.logical_or(forbidden_mask_np, rib_np > 0)
-
-    # Dilatation du bouclier (3 voxels) pour sceller parfaitement les espaces intercostaux
-    forbidden_sitk = sitk.GetImageFromArray(forbidden_mask_np.astype(np.uint8))
-  
-    # ---------------------------------------------------------
-    # DILATATION ASYMÉTRIQUE (Le Bouclier Intelligent)
-    # ---------------------------------------------------------
-    # On crée une boîte de 5x5x5 voxels remplie de "Vrai" (1)
-    struct = np.ones((5, 5, 5), dtype=bool)
-    
-    # RAPPEL LPS -> NumPy : L'ordre est (Z, Y, X).
-    # L'axe Y (index 1) va de l'avant (Ventre = 0) vers l'arrière (Dos = Max).
-    # On veut interdire au bouclier d'avancer vers le ventre (où se trouve le sein/la tumeur).
-    # On désactive donc la moitié "avant" de notre boîte de dilatation (les index Y 0 et 1).
-    struct[:, 0:2, :] = False 
-    
-    # Résultat : L'élément structurant est un "demi-cube". Il va dilater les côtes
-    # vers la gauche, la droite, le haut, le bas, et vers l'arrière, MAIS la face
-    # avant restera parfaitement intacte au contact de la tumeur.
-    
-    print("  -> Dilatation asymétrique du bouclier (protection de la bordure avant)...")
-    forbidden_mask_np_dilated = ndi.binary_dilation(forbidden_mask_np, structure=struct)
-
-    # Application de la Zone Interdite sur le CT
-    ct_np[forbidden_mask_np_dilated] = -1000
-    # ---------------------------------------------------------
-    # 4. BOUCLIER 2 : Le Mur Virtuel (Anti-fuite dos - V4/V3)
-    # ---------------------------------------------------------
-    print("  -> Création du mur virtuel arrière (anti-fuite vers le dos)...")
-    # Grâce à la normalisation LPS, y_idx représente de façon CERTAINE le dos quand il augmente.
-    z_idx, y_idx, x_idx = np.where(mask_np > 0)
-    
-    if len(y_idx) == 0:
-        return False, "Masque initial TotalSegmentator complètement vide."
-
-    # On cherche la limite arrière du masque initial
-    y_max = y_idx.max()
-    
-    # On laisse 30 voxels de liberté (3 à 5 cm) pour englober la poitrine profonde,
-    # puis on dresse le mur virtuel de -1000 HU pour verrouiller la graisse du dos.
-    marge_profondeur = 30
-    limite_arriere = min(y_max + marge_profondeur, ct_np.shape[1] - 1)
-    ct_np[:, limite_arriere:, :] = -1000 
-    
-    # Reconversion en image SimpleITK avec transfert des métadonnées propres
-    ct_img_constrained = sitk.GetImageFromArray(ct_np)
-    ct_img_constrained.CopyInformation(ct_img)
+    print("  -> Génération de la limite cutanée (Body Mask)...")
+    body_mask_np = get_body_mask(ct_np)
 
     # ---------------------------------------------------------
-    # 5. Lissage du CT (Smoothing)
+    # 3. L'Expansion Frontale (Vers le téton/la peau)
     # ---------------------------------------------------------
-    # Un léger flou gaussien élimine le bruit du scanner pour fluidifier la croissance.
-    smoothing_filter = sitk.SmoothingRecursiveGaussianImageFilter()
-    smoothing_filter.SetSigma(1.0)
-    ct_smoothed = smoothing_filter.Execute(ct_img_constrained)
+    print("  -> Expansion frontale asymétrique (remplissage externe)...")
+    # En LPS, l'axe Y (index 1 de NumPy) va de l'avant (Ventre=0) vers l'arrière (Dos=Max).
+    # On crée une structure asymétrique (40 voxels de long) orientée UNIQUEMENT vers l'avant.
+    struct_fwd = np.ones((5, 40, 5), dtype=bool)
+    struct_fwd[:, 20:, :] = False # Interdit l'expansion vers le dos
+    
+    breast_fwd = ndi.binary_dilation(breast_np, structure=struct_fwd)
     
     # ---------------------------------------------------------
-    # 6. Extraction des "Graines" (Seeds)
+    # 4. L'Expansion Profonde (Vers le muscle pectoral/côtes)
     # ---------------------------------------------------------
-    # Érosion de 2 voxels pour planter les graines loin de la peau et de l'air.
-    eroded_mask = sitk.BinaryErode(mask_img, [2, 2, 2])
-    np_eroded = sitk.GetArrayFromImage(eroded_mask)
-    z_idx_seed, y_idx_seed, x_idx_seed = np.where(np_eroded == 1)
+    print("  -> Expansion profonde isotrope...")
+    # On dilate le masque d'origine d'environ 15 voxels (1.5 cm) dans toutes les directions.
+    # Cela permet d'aller chercher la tumeur collée au muscle.
+    struct_iso = ndi.generate_binary_structure(3, 1)
+    breast_deep = ndi.binary_dilation(breast_np, structure=struct_iso, iterations=15)
     
-    if len(z_idx_seed) == 0:
-        return False, "Masque initial trop petit après érosion (impossible de placer des graines)."
+    # Fusion des deux expansions
+    breast_expanded = breast_fwd | breast_deep
+    
+    # C'est ici qu'on coupe l'excédent : on intersecte avec le Body Mask.
+    # Ainsi, l'expansion frontale s'écrase parfaitement contre la limite de la peau.
+    breast_expanded = breast_expanded & body_mask_np
 
-    # Sélection aléatoire de 50 points
-    nb_seeds = min(50, len(z_idx_seed))
-    random_indices = random.sample(range(len(z_idx_seed)), nb_seeds)
+    # ---------------------------------------------------------
+    # 5. Construction du Super-Bouclier (La Zone Interdite)
+    # ---------------------------------------------------------
+    print("  -> Construction du bouclier anatomique massif...")
+    shield_np = np.zeros_like(ct_np, dtype=bool)
     
-    seed_list = []
-    for idx in random_indices:
-        seed_list.append((int(x_idx_seed[idx]), int(y_idx_seed[idx]), int(z_idx_seed[idx])))
+    # On liste les mots-clés des organes qui DOIVENT interdire le passage
+    shield_keywords = [
+        "heart", "sternum", "costal_cartilages", "rib", "vertebrae", 
+        "lung", "pectoralis", "clavicula"
+    ]
+    
+    # Chargement dynamique depuis le dossier des organes du patient
+    if organs_dir.exists():
+        for organ_file in organs_dir.glob("*.nii.gz"):
+            if any(kw in organ_file.name for kw in shield_keywords):
+                org_img = sitk.ReadImage(str(organ_file))
+                org_img = sitk.DICOMOrient(org_img, 'LPS')
+                org_np = sitk.GetArrayFromImage(org_img).astype(bool)
+                shield_np = shield_np | org_np
+    else:
+        return False, f"Dossier des boucliers introuvable : {organs_dir.name}"
+
+    # Dilatation légère du bouclier (3 voxels) pour cimenter les failles inter-musculaires
+    shield_dilated = ndi.binary_dilation(shield_np, iterations=3)
+
+    # ---------------------------------------------------------
+    # 6. La Soustraction (Sculpture de la ROI)
+    # ---------------------------------------------------------
+    print("  -> Soustraction géométrique et nettoyage...")
+    # ROI = Expansion Mammaire MINUS Le Bouclier
+    final_breast_np = breast_expanded & ~shield_dilated
+
+    # ---------------------------------------------------------
+    # 7. Filtrage par Composante Connexe (Nettoyage des déchets)
+    # ---------------------------------------------------------
+    # La soustraction peut laisser de petits bouts de graisse flottants derrière les côtes.
+    # On ne garde que les blocs qui touchent le masque TS d'origine.
+    labeled_mask, num_features = ndi.label(final_breast_np)
+    
+    if num_features > 0:
+        # Trouver les labels qui chevauchent le masque initial de TS
+        overlapping_labels = np.unique(labeled_mask[breast_np])
+        overlapping_labels = overlapping_labels[overlapping_labels != 0] # Exclure le fond (0)
         
+        # Reconstruire le masque final uniquement avec ces labels autorisés
+        final_cleaned_np = np.isin(labeled_mask, overlapping_labels)
+    else:
+        final_cleaned_np = final_breast_np
+
     # ---------------------------------------------------------
-    # 7. Configuration et exécution du Region Growing
+    # 8. Restauration et Sauvegarde
     # ---------------------------------------------------------
-    print(f"  -> Croissance de région en cours (Tolérance: {multiplier})...")
-    region_grow_filter = sitk.ConfidenceConnectedImageFilter()
-    region_grow_filter.SetSeedList(seed_list)
-    region_grow_filter.SetMultiplier(multiplier)          
-    region_grow_filter.SetNumberOfIterations(iterations)  
-    region_grow_filter.SetInitialNeighborhoodRadius(2)
-    region_grow_filter.SetReplaceValue(1)
+    final_img = sitk.GetImageFromArray(final_cleaned_np.astype(np.uint8))
+    final_img.CopyInformation(breast_img) # Récupère métadonnées d'origine
     
-    expanded_mask = region_grow_filter.Execute(ct_smoothed)
-    
-    # ---------------------------------------------------------
-    # 8. Fusion des masques et Traitement Morphologique
-    # ---------------------------------------------------------
-    final_mask = sitk.Or(mask_img, expanded_mask)
-    
-    print("  -> Traitement morphologique (comblement des trous internes)...")
-    # Fermeture Morphologique (rayon 10 voxels) pour effacer les trous "de gruyère"
-    # formés par l'hétérogénéité de la graisse sans modifier la frontière externe.
-    final_mask = sitk.BinaryMorphologicalClosing(final_mask, [10, 10, 10])
-    final_mask = sitk.BinaryFillhole(final_mask)
-    
-    # Sauvegarde du masque final corrigé et stabilisé
-    sitk.WriteImage(final_mask, str(output_path))
-    return True, f"Succès (Sauvegardé sous {output_path.name})"
+    sitk.WriteImage(final_img, str(output_path))
+    return True, f"Succès (ROI sauvegardée : {output_path.name})"
 
 
 def generate_log_report(output_dir: Path, stats: dict, total_masks: int):
     """Génère un fichier texte récapitulatif de l'exécution du script."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = output_dir / f"rapport_expansion_{timestamp}.txt"
+    log_file = output_dir / f"rapport_roi_deterministe_{timestamp}.txt"
     
     with open(log_file, "w", encoding="utf-8") as f:
         f.write("====================================================\n")
-        f.write("    RAPPORT D'EXPANSION DES MASQUES MAMMAIRES (V6)\n")
+        f.write("    RAPPORT DE CRÉATION ROI MAMMAIRE (DÉTERMINISTE V6)\n")
         f.write("====================================================\n")
         f.write(f"Date et heure de fin : {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
         f.write(f"Total de masques analysés : {total_masks}\n\n")
@@ -222,68 +198,65 @@ def generate_log_report(output_dir: Path, stats: dict, total_masks: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extension des masques via Region Growing (LPS Indestructible V6).")
+    parser = argparse.ArgumentParser(description="Création de ROI mammaire par soustraction géométrique (V6).")
     
-    # Arguments d'arborescence
     parser.add_argument("--ct_dir", type=Path, default=Path("./Base_PETCT"), 
                         help="Dossier contenant les sous-dossiers patients avec les CT initiaux.")
     parser.add_argument("--mask_dir", type=Path, default=Path("./Base_PETCT_BreastMasks"), 
                         help="Dossier contenant les masques TotalSegmentator générés à l'étape précédente.")
-
     parser.add_argument("--organs_dir", type=Path, default=Path("./Base_PETCT_Organs"), 
-                        help="Dossier contenant les boucliers TS (coeur, sternum, côtes).")
-  
+                        help="Dossier racine contenant les sous-dossiers patients avec les organes boucliers.")
     parser.add_argument("--output_dir", type=Path, default=Path("./Base_PETCT_BreastMasks_Expanded"), 
-                        help="Dossier de sauvegarde des nouveaux masques.")
+                        help="Dossier de sauvegarde des nouvelles ROI.")
     
-    # Paramètres de l'algorithme
-    parser.add_argument("--multiplier", type=float, default=2.5, 
-                        help="Tolérance de l'algorithme. Plus c'est haut, plus ça s'étend. (Défaut: 2.5)")
-    parser.add_argument("--iterations", type=int, default=3, 
-                        help="Nombre d'itérations de mise à jour des statistiques. (Défaut: 3)")
     parser.add_argument("--ct-suffix", default="_TDM_", help="Marqueur du fichier CT (Défaut: _TDM_)")
+    parser.add_argument("--overwrite", action="store_true", help="Écraser les masques existants")
     
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     
     execution_stats = {"success": [], "skipped": [], "failed": []}
     
-    masks = list(args.mask_dir.glob("*_breast_mask.nii.gz"))
+    # On se base sur le masque unifié généré par la tâche 'breasts' de TS
+    masks = list(args.mask_dir.glob("*_breast*.nii.gz"))
     if not masks:
         print(f"Aucun masque trouvé dans {args.mask_dir}")
         return
         
-    print(f"{len(masks)} masque(s) trouvé(s). Début de l'expansion avec tolérance à {args.multiplier}...\n")
+    print(f"{len(masks)} masque(s) trouvé(s). Début du traitement déterministe...\n")
     
     for mask_path in masks:
-        patient_id = mask_path.name.replace("_breast_mask.nii.gz", "")
+        # Nettoyage pour récupérer l'ID (ex: PATIENT_01_breast.nii.gz -> PATIENT_01)
+        # S'adapte au nom exact de sortie que TotalSegmentator a donné.
+        patient_id = mask_path.name.split("_breast")[0]
         print(f"[{patient_id}]")
         
-        patient_dir = args.ct_dir / patient_id
-        imgs_dir = patient_dir / "imgs"
+        patient_ct_dir = args.ct_dir / patient_id
+        patient_organs_dir = args.organs_dir / patient_id
+        imgs_dir = patient_ct_dir / "imgs"
+        
+        output_mask_path = args.output_dir / f"{patient_id}_breast_roi_V6.nii.gz"
+        
+        if output_mask_path.exists() and not args.overwrite:
+            print(f"  [SKIP] ROI déjà existante.")
+            execution_stats["skipped"].append((patient_id, "ROI existante"))
+            continue
         
         if not imgs_dir.exists():
             print(f"  [SKIP] Dossier images introuvable.")
-            execution_stats["skipped"].append((patient_id, "Dossier 'imgs' introuvable dans le ct_dir"))
+            execution_stats["skipped"].append((patient_id, "Dossier 'imgs' introuvable"))
             continue
             
         ct_files = list(imgs_dir.glob(f"*{args.ct_suffix}*.nii.gz"))
         if not ct_files:
-            print(f"  [SKIP] Aucun fichier CT (*{args.ct_suffix}*.nii.gz) trouvé.")
+            print(f"  [SKIP] CT scan introuvable.")
             execution_stats["skipped"].append((patient_id, "CT scan introuvable"))
             continue
             
         ct_file = ct_files[0]
-        output_mask_path = args.output_dir / f"{patient_id}_breast_mask_expanded.nii.gz"
-
-        patient_organs_dir = args.organs_dir / patient_id
-        if not patient_organs_dir.exists():
-            print(f"  [SKIP] Dossier des boucliers (organes) introuvable.")
-            execution_stats["skipped"].append((patient_id, "Dossier organes TS manquant"))
-            continue
         
         try:
-            success, message = expand_breast_mask(ct_file, mask_path, patient_organs_dir, output_mask_path, args.multiplier, args.iterations)
+            success, message = expand_and_sculpt_breast(ct_file, mask_path, patient_organs_dir, output_mask_path)
             if success:
                 print(f"  [OK] {message}")
                 execution_stats["success"].append(patient_id)
@@ -294,7 +267,7 @@ def main():
             print(f"  [ÉCHEC] Erreur inattendue : {e}")
             execution_stats["failed"].append((patient_id, str(e)))
 
-    print("\n=== EXPANSION DES MASQUES TERMINÉE ===")
+    print("\n=== CRÉATION DES ROI TERMINÉE ===")
     generate_log_report(args.output_dir, execution_stats, len(masks))
 
 if __name__ == "__main__":
