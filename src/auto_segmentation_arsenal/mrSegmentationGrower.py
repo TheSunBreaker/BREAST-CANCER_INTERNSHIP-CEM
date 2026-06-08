@@ -33,7 +33,8 @@ def get_body_mask(ct_np: np.ndarray) -> np.ndarray:
     Crée un masque plein du corps du patient (exclut l'air ambiant et la table du scanner).
     """
     # 1. Seuillage large (le corps humain est > -500 HU)
-    body_thresh = ct_np > -500
+    # On abaisse à -700 HU pour être sûr d'attraper la peau fine du téton
+    body_thresh = ct_np > -700
     
     # 2. Ignorer la table du scanner en ne gardant que le plus gros bloc connexe
     labeled_body, num_features = ndi.label(body_thresh)
@@ -84,8 +85,10 @@ def expand_and_sculpt_breast(ct_path: Path, mask_path: Path, organs_dir: Path, o
     print("  -> Expansion frontale asymétrique (remplissage externe)...")
     # En LPS, l'axe Y (index 1 de NumPy) va de l'avant (Ventre=0) vers l'arrière (Dos=Max).
     # On crée une structure asymétrique (40 voxels de long) orientée UNIQUEMENT vers l'avant.
-    struct_fwd = np.ones((5, 40, 5), dtype=bool)
-    struct_fwd[:, 20:, :] = False # Interdit l'expansion vers le dos
+    # Finalement, on passe le rayon à 300 voxels pour s'assurer d'atteindre le bout du sein
+    struct_fwd = np.ones((5, 300, 5), dtype=bool)
+    # On coupe la moitié arrière (150:) pour interdire la dilatation vers le dos
+    struct_fwd[:, 150:, :] = False
     
     breast_fwd = ndi.binary_dilation(breast_np, structure=struct_fwd)
     
@@ -95,8 +98,10 @@ def expand_and_sculpt_breast(ct_path: Path, mask_path: Path, organs_dir: Path, o
     print("  -> Expansion profonde isotrope...")
     # On dilate le masque d'origine d'environ 15 voxels (1.5 cm) dans toutes les directions.
     # Cela permet d'aller chercher la tumeur collée au muscle.
+    # Finalement, on passe à 20 iterations (environ 2 cm) pour être CERTAIN d'englober
+    # la tumeur jusqu'au contact strict de la côte/du muscle.
     struct_iso = ndi.generate_binary_structure(3, 1)
-    breast_deep = ndi.binary_dilation(breast_np, structure=struct_iso, iterations=15)
+    breast_deep = ndi.binary_dilation(breast_np, structure=struct_iso, iterations=20)
     
     # Fusion des deux expansions
     breast_expanded = breast_fwd | breast_deep
@@ -128,8 +133,17 @@ def expand_and_sculpt_breast(ct_path: Path, mask_path: Path, organs_dir: Path, o
     else:
         return False, f"Dossier des boucliers introuvable : {organs_dir.name}"
 
-    # Dilatation légère du bouclier (3 voxels) pour cimenter les failles inter-musculaires
-    shield_dilated = ndi.binary_dilation(shield_np, iterations=3)
+    # SOLUTION PERTE BOUT DE TUMEUR : On utilise un Closing au lieu d'un Dilation.
+    # Le bouclier ne "gonfle" plus vers le sein, il se contente de lier 
+    # fermement les côtes, cartilages et pectoraux entre eux.
+
+    # 1. On bouche les fissures entre les côtes et les muscles
+    shield_closed = ndi.binary_closing(shield_np, iterations=2)
+    
+    # 2. NOUVEAU : La Marge de Sécurité Anti-Fuite
+    # On dilate le bouclier de 2 voxels (environ 2 mm) vers le sein.
+    # Ainsi, la côte et le poumon deviennent "intouchables" avec une zone tampon.
+    shield_final = ndi.binary_dilation(shield_closed, iterations=2)
 
     # ---------------------------------------------------------
     # 6. La Soustraction (Sculpture de la ROI)
