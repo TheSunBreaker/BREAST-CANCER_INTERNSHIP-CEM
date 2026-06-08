@@ -726,16 +726,19 @@ def discover_subjects_from_nnunet(nnunet_raw_dir: str, breast_masks_dir: str) ->
         subj_id = os.path.basename(tumor_path).replace(".nii.gz", "")
         pet_path = os.path.join(images_dir, f"{subj_id}_0000.nii.gz")
         ct_path = os.path.join(images_dir, f"{subj_id}_0001.nii.gz")
-        breast_path = os.path.join(breast_masks_dir, f"{subj_id}_breast_mask.nii.gz")
+
+        breast_paths = glob.glob(os.path.join(breast_masks_dir, f"{subj_id}_breast*.nii.gz"))
         
         if not os.path.exists(pet_path) or not os.path.exists(ct_path):
             print(f" [SKIP] {subj_id} : Images PET/CT manquantes.")
             continue
             
-        if not os.path.exists(breast_path):
-            print(f" [SKIP] {subj_id} : Masque sein introuvable.")
-            continue
-            
+        if len(breast_paths) == 0:
+          print(f" [SKIP] {subj_id} : Masque sein introuvable.")
+          continue
+
+        breast_path = breast_paths[0]
+  
         cases.append({
             "case_id": subj_id,
             "pet": pet_path,
