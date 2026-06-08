@@ -32,24 +32,31 @@ def get_body_mask(ct_np: np.ndarray) -> np.ndarray:
     """
     Crée un masque plein du corps du patient (exclut l'air ambiant et la table du scanner).
     """
-    # 1. Seuillage large (le corps humain est > -500 HU)
-    # On abaisse à -700 HU pour être sûr d'attraper la peau fine du téton
-    body_thresh = ct_np > -700
+    # 1. Seuillage légèrement plus strict (-500 HU est généralement le meilleur 
+    # compromis pour inclure la peau/graisse tout en excluant les mousses légères)
+    body_thresh = ct_np > -500
     
-    # 2. Ignorer la table du scanner en ne gardant que le plus gros bloc connexe
-    labeled_body, num_features = ndi.label(body_thresh)
+    # 2. NOUVEAU : Casser les ponts avec la machine (Érosion)
+    # On érode de 2 voxels pour séparer le corps de la table s'ils se touchent.
+    body_eroded = ndi.binary_erosion(body_thresh, iterations=2)
+    
+    # 3. Ignorer la table du scanner en gardant le plus gros bloc sur l'image ÉRODÉE
+    labeled_body, num_features = ndi.label(body_eroded)
     if num_features == 0:
         return body_thresh
         
-    sizes = ndi.sum(body_thresh, labeled_body, range(1, num_features + 1))
+    sizes = ndi.sum(body_eroded, labeled_body, range(1, num_features + 1))
     largest_label = np.argmax(sizes) + 1
-    body_mask = (labeled_body == largest_label)
+    body_core = (labeled_body == largest_label)
     
-    # 3. Remplissage des trous 2D pour avoir un corps complètement plein (poumons inclus)
-    for z in range(body_mask.shape[0]):
-        body_mask[z] = ndi.binary_fill_holes(body_mask[z])
+    # 4. NOUVEAU : Redilater pour récupérer l'épaisseur de peau perdue à l'étape 2
+    body_mask_isolated = ndi.binary_dilation(body_core, iterations=2)
+    
+    # 5. Remplissage des trous 2D pour avoir un corps complètement plein (poumons inclus)
+    for z in range(body_mask_isolated.shape[0]):
+        body_mask_isolated[z] = ndi.binary_fill_holes(body_mask_isolated[z])
         
-    return body_mask
+    return body_mask_isolated
 
 def expand_and_sculpt_breast(ct_path: Path, mask_path: Path, organs_dir: Path, output_path: Path):
     """
