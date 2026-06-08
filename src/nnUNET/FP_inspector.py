@@ -3,78 +3,87 @@
 
 """
 ===============================================================================
-Analyse de Segmentation nnUNet Suspecte
+Analyse de Segmentation nnUNet avec SimpleITK
 ===============================================================================
 
 OBJECTIF
----------
-Fournir des métriques permettant d'évaluer si une prédiction nnUNet
-correspond à une lésion crédible ou à un faux positif probable.
-
-Le script calcule :
-
-- Nombre total de voxels segmentés
-- Volume physique
-- Nombre de composantes connexes
-- Taille des composantes
-- Bounding box
-- SUV moyen / max dans la segmentation
-- Comparaison au fond PET
-- Indicateurs de suspicion
-
-ENTREES
 --------
-mask.nii.gz : segmentation prédite
-pet.nii.gz  : PET aligné sur le masque
+Évaluer la crédibilité d'une segmentation prédite par nnUNet en calculant :
+
+    • Nombre total de voxels segmentés
+    • Volume physique (mm³ et mL)
+    • Nombre de composantes connexes
+    • Taille des composantes
+    • Bounding Box physique
+    • SUV moyen / max / écart-type
+    • Contraste par rapport au fond PET
+    • Indicateurs simples de suspicion de faux positif
+
+ENTRÉES
+-------
+prediction.nii.gz : masque binaire prédit
+pet.nii.gz        : volume PET co-enregistré
 
 SORTIE
--------
-Rapport texte détaillé.
+------
+Rapport texte détaillé dans le terminal.
+
+DÉPENDANCES
+-----------
+pip install SimpleITK numpy
+
 ===============================================================================
 """
 
-import nibabel as nib
+import SimpleITK as sitk
 import numpy as np
 
-from scipy.ndimage import label
 
-
-# ============================================================================
-# PARAMETRES
-# ============================================================================
+# =============================================================================
+# PARAMÈTRES
+# =============================================================================
 
 MASK_PATH = "prediction.nii.gz"
 PET_PATH = "pet.nii.gz"
 
-# seuil empirique sous lequel on considère la prédiction très petite
+# seuil empirique de très petit volume
 SMALL_VOLUME_ML = 0.05
 
-# nombre minimum de voxels considéré comme crédible
+# nombre minimal de voxels considéré comme crédible
 MIN_VOXELS = 50
 
 
-# ============================================================================
-# CHARGEMENT
-# ============================================================================
-
-mask_nii = nib.load(MASK_PATH)
-pet_nii = nib.load(PET_PATH)
-
-mask = mask_nii.get_fdata() > 0
-pet = pet_nii.get_fdata()
-
-spacing = mask_nii.header.get_zooms()[:3]
-
-voxel_volume_mm3 = np.prod(spacing)
+# =============================================================================
+# CHARGEMENT DES IMAGES
+# =============================================================================
 
 print("\n==============================")
 print("ANALYSE SEGMENTATION")
 print("==============================\n")
 
+mask_img = sitk.ReadImage(MASK_PATH)
+pet_img = sitk.ReadImage(PET_PATH)
 
-# ============================================================================
+# Conversion en tableaux NumPy
+#
+# Remarque :
+# SimpleITK retourne les tableaux sous la forme :
+#
+#     [z, y, x]
+#
+mask = sitk.GetArrayFromImage(mask_img) > 0
+pet = sitk.GetArrayFromImage(pet_img)
+
+# spacing physique (x, y, z)
+spacing = np.array(mask_img.GetSpacing())
+
+# volume d'un voxel en mm³
+voxel_volume_mm3 = np.prod(spacing)
+
+
+# =============================================================================
 # VOLUME GLOBAL
-# ============================================================================
+# =============================================================================
 
 n_voxels = int(mask.sum())
 
@@ -88,25 +97,45 @@ print(f"Volume (mL)     : {volume_ml:.5f}")
 print()
 
 
-# ============================================================================
+# =============================================================================
 # COMPOSANTES CONNEXES
-# ============================================================================
+# =============================================================================
 
-labeled, n_components = label(mask)
+#
+# Création d'une image binaire SITK
+#
+mask_sitk = sitk.Cast(mask_img > 0, sitk.sitkUInt8)
+
+#
+# Étiquetage des composantes connexes
+#
+cc = sitk.ConnectedComponent(mask_sitk)
+
+#
+# Calcul des statistiques de chaque composante
+#
+stats = sitk.LabelShapeStatisticsImageFilter()
+stats.Execute(cc)
+
+n_components = stats.GetNumberOfLabels()
 
 print("----- Composantes connexes -----")
 print(f"Nombre : {n_components}")
 
 component_sizes = []
 
-for i in range(1, n_components + 1):
-    size = np.sum(labeled == i)
+for label_id in stats.GetLabels():
+
+    size = stats.GetNumberOfPixels(label_id)
+
     component_sizes.append(size)
 
-component_sizes = sorted(component_sizes, reverse=True)
+component_sizes.sort(reverse=True)
 
 for idx, size in enumerate(component_sizes, start=1):
-    comp_ml = size * voxel_volume_mm3 / 1000
+
+    comp_ml = size * voxel_volume_mm3 / 1000.0
+
     print(
         f"Composante {idx:02d} : "
         f"{size} voxels "
@@ -116,11 +145,11 @@ for idx, size in enumerate(component_sizes, start=1):
 print()
 
 
-# ============================================================================
-# PLUS GRANDE COMPOSANTE
-# ============================================================================
+# =============================================================================
+# COHÉRENCE DE LA SEGMENTATION
+# =============================================================================
 
-if len(component_sizes) > 0:
+if component_sizes:
 
     largest = component_sizes[0]
 
@@ -129,23 +158,32 @@ if len(component_sizes) > 0:
     print("----- Cohérence -----")
     print(
         f"Part de la plus grosse composante : "
-        f"{100*ratio:.2f}%"
+        f"{100 * ratio:.2f}%"
     )
     print()
 
 
-# ============================================================================
+# =============================================================================
 # BOUNDING BOX
-# ============================================================================
+# =============================================================================
 
-if n_voxels > 0:
+if n_components > 0:
 
-    coords = np.argwhere(mask)
+    #
+    # Bounding box de la plus grande composante
+    #
+    largest_label = max(
+        stats.GetLabels(),
+        key=lambda x: stats.GetNumberOfPixels(x)
+    )
 
-    mins = coords.min(axis=0)
-    maxs = coords.max(axis=0)
+    bbox = stats.GetBoundingBox(largest_label)
 
-    bbox_size_vox = maxs - mins + 1
+    #
+    # Format :
+    # (x_min, y_min, z_min, size_x, size_y, size_z)
+    #
+    bbox_size_vox = np.array(bbox[3:])
 
     bbox_size_mm = bbox_size_vox * spacing
 
@@ -158,23 +196,23 @@ if n_voxels > 0:
 
     print(
         f"Dimensions mm : "
-        f"{bbox_size_mm.round(2)}"
+        f"{np.round(bbox_size_mm, 2)}"
     )
 
     print()
 
 
-# ============================================================================
-# ANALYSE PET
-# ============================================================================
+# =============================================================================
+# ANALYSE DES INTENSITÉS PET
+# =============================================================================
 
 if n_voxels > 0:
 
     lesion_values = pet[mask]
 
-    suv_mean = lesion_values.mean()
-    suv_max = lesion_values.max()
-    suv_std = lesion_values.std()
+    suv_mean = float(np.mean(lesion_values))
+    suv_max = float(np.max(lesion_values))
+    suv_std = float(np.std(lesion_values))
 
     print("----- Intensités PET -----")
 
@@ -184,11 +222,14 @@ if n_voxels > 0:
 
     print()
 
-    # fond = reste du volume
+    # -------------------------------------------------------------------------
+    # Fond PET
+    # -------------------------------------------------------------------------
+
     background = pet[~mask]
 
-    bg_mean = background.mean()
-    bg_std = background.std()
+    bg_mean = float(np.mean(background))
+    bg_std = float(np.std(background))
 
     print("----- Contraste fond -----")
 
@@ -209,43 +250,62 @@ if n_voxels > 0:
     print()
 
 
-# ============================================================================
-# INTERPRETATION
-# ============================================================================
+# =============================================================================
+# INTERPRÉTATION AUTOMATIQUE
+# =============================================================================
 
-print("----- Evaluation -----")
+print("----- Évaluation -----")
 
 suspicions = []
 
+#
+# Très peu de voxels
+#
 if n_voxels < MIN_VOXELS:
+
     suspicions.append(
         "Très faible nombre de voxels"
     )
 
+#
+# Très petit volume
+#
 if volume_ml < SMALL_VOLUME_ML:
+
     suspicions.append(
         "Volume extrêmement petit"
     )
 
+#
+# Segmentation dispersée
+#
 if n_components > 3:
+
     suspicions.append(
         "Nombre élevé de composantes"
     )
 
-if len(component_sizes) > 0:
+#
+# Fragmentation importante
+#
+if component_sizes:
 
     largest_ratio = component_sizes[0] / n_voxels
 
     if largest_ratio < 0.50:
+
         suspicions.append(
-            "Prédiction fragmentée"
+            "Prédiction fortement fragmentée"
         )
 
-if len(suspicions) == 0:
+#
+# Rapport final
+#
+if not suspicions:
 
     print(
         "Aucun indicateur majeur "
-        "de faux positif."
+        "de faux positif détecté."
     )
 
 else:
@@ -254,7 +314,8 @@ else:
         "Indicateurs suggérant un faux positif :"
     )
 
-    for s in suspicions:
-        print(f" - {s}")
+    for item in suspicions:
+
+        print(f" - {item}")
 
 print("\nAnalyse terminée.\n")
