@@ -214,7 +214,7 @@ def main():
     
     # Chemins avec valeurs par défaut alignées sur l'architecture V6
     parser.add_argument("--petct_root", type=Path, default=Path("./Base_PETCT"), help="Racine des données PET/CT")
-    parser.add_argument("--breast_masks", type=Path, default=Path("./Base_PETCT_BreastMasks"), help="Dossier des masques mammaires")
+    parser.add_argument("--breast_masks", type=Path, default=Path("./Base_PETCT_BreastMasks_Expanded"), help="Dossier des masques mammaires")
     parser.add_argument("--output_root", type=Path, default=Path("./Base_PETCT_AutoMasks"), help="Dossier de sortie des tumeurs")
     
     # Paramètres algorithmiques
