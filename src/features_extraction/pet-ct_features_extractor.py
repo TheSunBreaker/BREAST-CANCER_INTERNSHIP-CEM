@@ -770,7 +770,7 @@ def save_dataset(rows: List[Dict[str, float]], out_csv: str) -> pd.DataFrame:
 def main():
     parser = argparse.ArgumentParser(description="Extracteur Radiomique pour Modèles de Prédiction (Basé sur nnU-Net).")
     parser.add_argument("--nnunet_dir", type=str, default="./nnunet_data/nnUNet_raw/Dataset002_BreastPETCT")
-    parser.add_argument("--breast_dir", type=str, default="./Base_PETCT_BreastMasks")
+    parser.add_argument("--breast_dir", type=str, default="./Base_PETCT_BreastMasks_Expanded")
     parser.add_argument("--output_csv", type=str, default="./radiomics_features_petct.csv")
     parser.add_argument("--no_pyrad", action="store_true", help="Désactive PyRadiomics pour n'avoir que les features Numpy rapides.")
 
