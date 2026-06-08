@@ -158,6 +158,14 @@ def expand_and_sculpt_breast(ct_path: Path, mask_path: Path, organs_dir: Path, o
     final_breast_np = breast_expanded & ~shield_final
 
     # ---------------------------------------------------------
+    # 6.5. Coupure des ponts artificiels (Ouverture Morphologique)
+    # ---------------------------------------------------------
+    print("  -> Nettoyage des artefacts externes (Ouverture)...")
+    # On érode de 3 voxels puis on redilate de 3 voxels.
+    # Les petits liens matériels entre les seins seront détruits et ne repousseront pas.
+    final_breast_np = ndi.binary_opening(final_breast_np, iterations=3)
+
+    # ---------------------------------------------------------
     # 7. Filtrage par Composante Connexe (Nettoyage des déchets)
     # ---------------------------------------------------------
     # La soustraction peut laisser de petits bouts de graisse flottants derrière les côtes.
