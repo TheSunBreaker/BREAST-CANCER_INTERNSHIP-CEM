@@ -245,10 +245,13 @@ def main():
             continue
 
         # 2. Recherche du Masque Sein (TotalSegmentator)
-        breast_mask_path = args.breast_masks / f"{patient_id}_breast*.nii.gz"
-        if not breast_mask_path.exists():
-            print(f"[WARN] {patient_id} : Masque sein introuvable, patient ignoré.")
+
+        breast_masks = list(args.breast_masks.glob(f"{patient_id}_breast*.nii.gz"))
+        
+        if not breast_masks:
+            print(f"[WARN] {patient_id} : masque sein introuvable, patient ignoré.")
             continue
+        breast_mask_path = breast_masks[0]
 
         # 3. Recherche du CT (Conditionnelle)
         ct_path = None
