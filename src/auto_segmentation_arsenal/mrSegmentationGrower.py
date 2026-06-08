@@ -133,24 +133,29 @@ def expand_and_sculpt_breast(ct_path: Path, mask_path: Path, organs_dir: Path, o
     else:
         return False, f"Dossier des boucliers introuvable : {organs_dir.name}"
 
-    # SOLUTION PERTE BOUT DE TUMEUR : On utilise un Closing au lieu d'un Dilation.
-    # Le bouclier ne "gonfle" plus vers le sein, il se contente de lier 
-    # fermement les côtes, cartilages et pectoraux entre eux.
+    # SOLUTION ANTI-FUITE INTERNE : Transformer la coquille en bloc massif
 
-    # 1. On bouche les fissures entre les côtes et les muscles
-    shield_closed = ndi.binary_closing(shield_np, iterations=2)
+    # 1. On bouche les micro-fissures (le mortier). On passe à 3 itérations 
+    # pour être certain de lier les côtes aux pectoraux sans faille.
+    shield_closed = ndi.binary_closing(shield_np, iterations=3)
     
-    # 2. NOUVEAU : La Marge de Sécurité Anti-Fuite
-    # On dilate le bouclier de 2 voxels (environ 2 mm) vers le sein.
-    # Ainsi, la côte et le poumon deviennent "intouchables" avec une zone tampon.
-    shield_final = ndi.binary_dilation(shield_closed, iterations=2)
+    # 2. LE REMPLISSAGE (Le béton)
+    # On remplit l'intérieur de la cage thoracique coupe par coupe. 
+    # Le thorax devient un bloc solide et impénétrable.
+    shield_filled = np.zeros_like(shield_closed)
+    for z in range(shield_filled.shape[0]):
+        shield_filled[z] = ndi.binary_fill_holes(shield_closed[z])
+    
+    # 3. La Marge de Sécurité Anti-Fuite
+    # On repousse le bouclier massif de 2 voxels vers le sein pour protéger la côte.
+    shield_final = ndi.binary_dilation(shield_filled, iterations=2)
 
     # ---------------------------------------------------------
     # 6. La Soustraction (Sculpture de la ROI)
     # ---------------------------------------------------------
     print("  -> Soustraction géométrique et nettoyage...")
     # ROI = Expansion Mammaire MINUS Le Bouclier
-    final_breast_np = breast_expanded & ~shield_dilated
+    final_breast_np = breast_expanded & ~shield_final
 
     # ---------------------------------------------------------
     # 7. Filtrage par Composante Connexe (Nettoyage des déchets)
