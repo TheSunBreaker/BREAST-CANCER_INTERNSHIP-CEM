@@ -190,7 +190,7 @@ def main():
         raise KeyError("Le fichier clinique DOIT contenir 'subject_id' (ou patient_id) et 'pcrstatus'.")
 
     # Création du "dictionnaire" de référence. 
-    # drop_duplicates garantit qu'un patient n'est listé qu'une seule fois.
+    # drop_duplicagarantit qu'un patient n'est listé qu'une seule fois.
     clinical_map = (
         clinical_df[["subject_id", "pcrstatus"]]
         .drop_duplicates(subset=["subject_id"], keep="last")
