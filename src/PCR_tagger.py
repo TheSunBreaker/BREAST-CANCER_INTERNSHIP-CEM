@@ -19,6 +19,7 @@ import pandas as pd
 # 1. UTILITAIRES DE LECTURE (Robustesse)
 # =====================================================================
 
+
 def sniff_delimiter(path: Path, fallback: str = ",") -> str:
     """
     Tente de deviner si le CSV utilise des virgules, des points-virgules, etc.
@@ -32,10 +33,15 @@ def sniff_delimiter(path: Path, fallback: str = ",") -> str:
     except Exception:
         return fallback
 
-def load_csv_robust(path: Path, prefer: Optional[str] = None) -> pd.DataFrame:
+def load_file_robust(path: Path, prefer: Optional[str] = None) -> pd.DataFrame:
     """
-    Charge un fichier CSV de manière sécurisée en tentant plusieurs séparateurs.
+    Charge un fichier CSV ou EXCEL de manière sécurisée en tentant plusieurs séparateurs.
     """
+    # 1. Gérer nativement les fichiers Excel
+    if path.suffix.lower() in [".xlsx", ".xls"]:
+        return pd.read_excel(path)
+
+    # 2. Gérer les CSV
     if prefer:
         try:
             return pd.read_csv(path, sep=prefer)
@@ -48,18 +54,19 @@ def load_csv_robust(path: Path, prefer: Optional[str] = None) -> pd.DataFrame:
     except Exception:
         # Fallback de la dernière chance avec la virgule standard
         return pd.read_csv(path)
+        
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Nettoie les noms de colonnes : tout en minuscules, sans espaces.
-    Gère aussi l'harmonisation des identifiants (case_id / patient_id -> subject_id).
+    Gère aussi l'harmonisation des identifiants et sécurise leur typage.
     """
     df = df.copy()
+    
     # Nettoyage classique
     df.columns = [str(c).strip().lower() for c in df.columns]
     
-    # Remplacement dynamique : peu importe comment le script d'extraction a 
-    # nommé l'ID patient, on le force en "subject_id" pour que le merge fonctionne.
+    # Remplacement dynamique
     rename_map = {}
     if "case_id" in df.columns:
         rename_map["case_id"] = "subject_id"
@@ -68,6 +75,13 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         
     if rename_map:
         df.rename(columns=rename_map, inplace=True)
+        
+    # SÉCURITÉ ABSOLUE : Forcer l'ID en texte (string) pour éviter les échecs de merge
+    # On retire aussi les éventuels espaces ou zéros initiaux inutiles
+    if "subject_id" in df.columns:
+        df["subject_id"] = df["subject_id"].astype(str).str.strip()
+        # Optionnel : si nos ID contiennent des décimales bizarres dues à l'import (ex: '123.0')
+        df["subject_id"] = df["subject_id"].str.replace(r'\.0$', '', regex=True)
         
     return df
 
@@ -87,7 +101,7 @@ def process_modality(
     print(f"\n--- Traitement de la modalité : {modality_name} ---")
     
     # 1. Chargement et nettoyage des radiomiques
-    features_df = load_csv_robust(features_csv)
+    features_df = load_file_robust(features_csv)
     features_df = normalize_columns(features_df)
     
     # Vérification de sécurité stricte
@@ -169,7 +183,7 @@ def main():
 
     # --- 1. Chargement du dictionnaire clinique (La source de vérité) ---
     print("\n[INFO] Chargement du fichier Clinique...")
-    clinical_df = load_csv_robust(args.clinical, prefer=";")
+    clinical_df = load_file_robust(args.clinical, prefer=";")
     clinical_df = normalize_columns(clinical_df)
 
     if "subject_id" not in clinical_df.columns or "pcrstatus" not in clinical_df.columns:
