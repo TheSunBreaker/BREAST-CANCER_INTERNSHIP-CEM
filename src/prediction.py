@@ -28,11 +28,11 @@ from dataclasses import dataclass
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from sklearn.feature_selection import SelectKBest, mutual_info_classif
+from sklearn.feature_selection import SelectKBest, mutual_info_classif, SelectFromModel
 from sklearn.model_selection import StratifiedKFold, GridSearchCV
 from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score, f1_score
 
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, SGDClassifier # Très pratique pour implémenter ElasticNet
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
@@ -51,20 +51,23 @@ OUTER_N_SPLITS = 3
 INNER_N_SPLITS = 3
 RANDOM_STATE   = 42
 
-# Feature-count grid; auto-capped by n_features and n_samples
-K_GRID         = [5, 10, 15]
+# --- MAINTENANT ---
+# Feature-count grid pour la réduction douce (SelectKBest) avant l'Elastic Net
+K_GRID         = [100, 200, 300]
 
 # Per-model param grids (small & safe for tiny cohorts)
 GRIDS = {
     "LR": {
-        "kbest__k": K_GRID,
+        "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
+        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
         "clf__C":   [0.1, 1.0, 3.0, 10.0],
         "clf__penalty": ["l2"],
         "clf__solver": ["liblinear"],
         "clf__class_weight": ["balanced"],
     },
     "SVM": {
-        "kbest__k": K_GRID,
+        "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
+        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
         "clf__kernel": ["linear", "rbf"],
         "clf__C": [0.1, 1.0, 3.0, 10.0],
         "clf__gamma": ["scale"],   # for rbf
@@ -72,7 +75,8 @@ GRIDS = {
         "clf__probability": [True],
     },
     "RF": {
-        "kbest__k": K_GRID,
+        "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
+        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
         "clf__n_estimators": [200],
         "clf__max_depth": [None, 3, 5],
         "clf__min_samples_leaf": [1, 2, 3],
@@ -80,7 +84,8 @@ GRIDS = {
         "clf__random_state": [RANDOM_STATE],
     },
     "MLP": {
-        "kbest__k": K_GRID,
+        "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
+        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
         "clf__hidden_layer_sizes": [(16,), (32,), (32,16)],
         "clf__alpha": [1e-4, 1e-3],
         "clf__learning_rate_init": [1e-3, 3e-3],
@@ -249,13 +254,27 @@ def build_set(set_names: Tuple[str,...], singles: Dict[str, LabeledFrame]) -> Tu
     return "+".join(set_names), intersect_and_concatenate([(n, singles[n]) for n in set_names])
 # --------------------------------------------------
 
-
-# ----------------- MODEL FACTORIES -----------------
 def base_preproc():
+    # C'est ici que tu construis "l'entonnoir" étape par étape
     return [
+        # 1. Gestion des valeurs manquantes
         ("imp", SimpleImputer(strategy="median")),
+        
+        # 2. Standardisation (z-score, calculé uniquement sur le fold d'entraînement)
         ("scaler", StandardScaler()),
-        ("kbest", SelectKBest(mutual_info_classif, k=5)),  # k is just a placeholder, tuned via grid
+        
+        # 3. Filtre Univarié ("Réduction douce")
+        # On garde par exemple les 300 meilleures variables pour soulager l'ElasticNet.
+        # Ce 'k' peut d'ailleurs être mis dans notre GridSearch !
+        ("kbest_soft", SelectKBest(mutual_info_classif, k=300)), 
+        
+        # 4. Sélection Multivariée (Elastic Net)
+        # On utilise une régression logistique pénalisée en Elastic Net pour sélectionner
+        # les variables qui "travaillent bien ensemble".
+        # l1_ratio=0.5 signifie un équilibre parfait entre LASSO et Ridge.
+        ("elastic_net_selector", SelectFromModel(
+            SGDClassifier(loss="log_loss", penalty="elasticnet", l1_ratio=0.5, random_state=42)
+        ))
     ]
 
 def get_model_and_grid(tag: str):
