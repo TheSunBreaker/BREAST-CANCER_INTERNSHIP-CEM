@@ -30,7 +30,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, mutual_info_classif, SelectFromModel
 from sklearn.model_selection import StratifiedKFold, GridSearchCV
-from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score, f1_score
+from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score, f1_score, confusion_matrix
 
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression, SGDClassifier # Très pratique pour implémenter ElasticNet
@@ -38,11 +38,13 @@ from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier, ExtraTreesClassifier
 from sklearn.neural_network import MLPClassifier
 
+import joblib # Pour sauvegarder le meilleur modèle trouvé
+
 # ----------------- CONFIG -----------------
 FILES = {
-    "Clinical": r"D:\Home\esalasvilla\Documents\Stage\Breast_Project\Data\datasets\prediction\Clinical_features_no_0.xlsx",
-    "MRI": r"D:\Home\esalasvilla\Documents\Stage\Breast_Project\Data\datasets\prediction\MRI_features_with_pcr.xlsx",
-    "PETCT": r"D:\Home\esalasvilla\Documents\Stage\Breast_Project\Data\datasets\prediction\PET_CT_features_with_pcr.xlsx",
+    "Clinical": r"clinicals.xlsx",
+    "MRI": r"radiomics_dce.xlsx",
+    "PETCT": r"radiomics_pet-ct.xlsx",
 }
 POSSIBLE_LABELS = ["pcr", "pcrstatus", "label"]
 POSSIBLE_IDS    = ["subject_id", "patient_id", "id"]
@@ -381,7 +383,7 @@ def nested_cv_once(set_name: str, model_tag: str, X: pd.DataFrame, y: pd.Series,
         cv=inner,
         refit=True,
         n_jobs=1,
-        verbose=0,
+        verbose=1,
         error_score=np.nan,   # <— tolerate occasional bad fits
         )
 
@@ -389,7 +391,11 @@ def nested_cv_once(set_name: str, model_tag: str, X: pd.DataFrame, y: pd.Series,
 
         best = gs.best_estimator_
         proba = _predict_proba_safe(best, Xte)
-        pred  = (proba >= 0.5).astype(int)
+        pred = (proba >= 0.5).astype(int)
+
+        # --- NOUVEAU : Calcul de la matrice de confusion ---
+        # .ravel() aplatit la matrice 2x2 en 4 variables distinctes
+        tn, fp, fn, tp = confusion_matrix(yte, pred, labels=[0, 1]).ravel()
 
         rows.append({
             "set": set_name,
@@ -402,15 +408,32 @@ def nested_cv_once(set_name: str, model_tag: str, X: pd.DataFrame, y: pd.Series,
             "pr_auc": float(average_precision_score(yte, proba)),
             "bal_acc": float(balanced_accuracy_score(yte, pred)),
             "f1": float(f1_score(yte, pred, zero_division=0)),
+            # --- NOUVEAU : Sauvegarde des compteurs pour un plot ultérieur plus aisé de la matrice de confusion ---
+            "tn": int(tn),
+            "fp": int(fp),
+            "fn": int(fn),
+            "tp": int(tp),
         })
 
     folds = pd.DataFrame(rows)
     summary = (
-        folds.groupby(["set","model"])[["roc_auc","pr_auc","bal_acc","f1"]]
-        .agg(["mean","std"])
+        folds.groupby(["set","model"])
+        .agg({
+            "roc_auc": ["mean", "std"],
+            "pr_auc": ["mean", "std"],
+            "bal_acc": ["mean", "std"],
+            "f1": ["mean", "std"],
+            # NOUVEAU : On fait la SOMME des patients sur tous les folds
+            "tn": "sum", 
+            "fp": "sum", 
+            "fn": "sum", 
+            "tp": "sum"
+        })
     )
-    summary.columns = [f"{m}_{stat}" for m, stat in summary.columns]
+    # Aplatir les multi-index de colonnes proprement
+    summary.columns = [f"{c[0]}_{c[1]}" if c[1] else c[0] for c in summary.columns]
     summary = summary.reset_index()
+                     
     return folds, summary
 
 def _predict_proba_safe(model: Pipeline, X: pd.DataFrame) -> np.ndarray:
@@ -441,6 +464,9 @@ def refit_write_features(set_name: str, model_tag: str, X: pd.DataFrame, y: pd.S
     # On force la valeur de k, et on injecte le reste des hyperparamètres
     pipe.set_params(**{**best_params_example, "kbest_soft__k": chosen_k})
     pipe.fit(X, y)
+                           
+    # Sauvegarde du modèle complet (Pipeline + Poids)
+    joblib.dump(pipe, outdir / f"{set_name}__{model_tag}_FINAL_MODEL.joblib")
 
     # --- NOUVELLE LOGIQUE D'EXTRACTION À DEUX ÉTAGES ---
     try:
