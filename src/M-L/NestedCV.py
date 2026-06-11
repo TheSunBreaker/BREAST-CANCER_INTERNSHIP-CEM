@@ -32,9 +32,10 @@ from sklearn.feature_selection import SelectKBest, mutual_info_classif, SelectFr
 from sklearn.model_selection import StratifiedKFold, GridSearchCV
 from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score, f1_score
 
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression, SGDClassifier # Très pratique pour implémenter ElasticNet
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier, ExtraTreesClassifier
 from sklearn.neural_network import MLPClassifier
 
 # ----------------- CONFIG -----------------
@@ -57,6 +58,37 @@ K_GRID         = [100, 200, 300]
 
 # Per-model param grids (small & safe for tiny cohorts)
 GRIDS = {
+
+    "ET": {
+        "kbest_soft__k": K_GRID,
+        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1],
+        "clf__n_estimators": [200],
+        "clf__max_depth": [None, 3, 5],
+        "clf__min_samples_leaf": [1, 2, 3],
+        "clf__class_weight": ["balanced"],
+        "clf__random_state": [RANDOM_STATE],
+    },
+
+    "HGB": {
+        "kbest_soft__k": K_GRID,
+        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1],
+        "clf__learning_rate": [0.01, 0.1],
+        "clf__max_iter": [100, 200],
+        "clf__max_depth": [3, 5],
+        "clf__min_samples_leaf": [2, 5],
+        "clf__random_state": [RANDOM_STATE],
+        # HistGradientBoosting ne prend pas 'class_weight="balanced"' nativement dans sklearn, 
+        # mais on gère le déséquilibre via min_samples_leaf pour stabiliser les feuilles.
+    },
+
+   "KNN": {
+        "kbest_soft__k": K_GRID,
+        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1],
+        "clf__n_neighbors": [3, 5, 7],
+        "clf__weights": ["uniform", "distance"],
+        "clf__metric": ["euclidean", "manhattan"],
+    },
+  
     "LR": {
         "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
         "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
@@ -281,6 +313,12 @@ def get_model_and_grid(tag: str):
     """Return (estimator_instance, param_grid) for the given model tag."""
     if tag == "LR":
         clf = LogisticRegression(random_state=RANDOM_STATE)
+    elif tag == "ET":
+        clf = ExtraTreesClassifier()
+    elif tag == "HGB":
+        clf = HistGradientBoostingClassifier()
+    elif tag == "KNN":
+        clf = KNeighborsClassifier()
     elif tag == "SVM":
         clf = SVC(random_state=RANDOM_STATE)
     elif tag == "RF":
@@ -309,7 +347,7 @@ def nested_cv_once(set_name: str, model_tag: str, X: pd.DataFrame, y: pd.Series,
     # grid adjusted for k per dataset
     _, base_grid = get_model_and_grid(model_tag)
     grid = dict(base_grid)  # shallow copy
-    grid["kbest__k"] = cap_k_grid(X, y, base_grid["kbest__k"])
+    grid["kbest_soft__k"] = cap_k_grid(X, y, base_grid["kbest_soft__k"])
 
     rows = []
     fold = 0
@@ -392,24 +430,33 @@ def refit_write_features(set_name: str, model_tag: str, X: pd.DataFrame, y: pd.S
                          best_params_example: dict, outdir: Path):
     # Refit on ALL data with a "representative" best param set (from outer CV mode)
     clf, _ = get_model_and_grid(model_tag)
-    # sanitize params against current data (cap k if needed)
+    
+    # Sanitize params against current data (cap k if needed)
     k_grid = cap_k_grid(X, y, K_GRID)
-    chosen_k = best_params_example.get("kbest__k", k_grid[-1])
+    chosen_k = best_params_example.get("kbest_soft__k", k_grid[-1])
     chosen_k = max(1, min(chosen_k, k_grid[-1]))
 
-    # assemble pipeline & set params
+    # Assemble pipeline & set params
     pipe = Pipeline(base_preproc() + [("clf", clf)])
-    pipe.set_params(**{**best_params_example, "kbest__k": chosen_k})
+    # On force la valeur de k, et on injecte le reste des hyperparamètres
+    pipe.set_params(**{**best_params_example, "kbest_soft__k": chosen_k})
     pipe.fit(X, y)
 
-    # Feature list only makes sense when we have coefficients or importances
+    # --- NOUVELLE LOGIQUE D'EXTRACTION À DEUX ÉTAGES ---
     try:
-        mask = pipe.named_steps["kbest"].get_support()
-        selected = list(X.columns[mask])
-    except Exception:
-        selected = list(X.columns)  # fallback
-
+        # 1. Variables qui ont survécu au KBest
+        mask_kbest = pipe.named_steps["kbest_soft"].get_support()
+        features_after_kbest = np.array(X.columns)[mask_kbest]
+        
+        # 2. Variables qui ont survécu à l'Elastic Net
+        mask_enet = pipe.named_steps["elastic_net_selector"].get_support()
+        selected = list(features_after_kbest[mask_enet])
+    except Exception as e:
+        print(f"[WARN] Erreur d'extraction des features : {e}")
+        selected = list(X.columns)  # Fallback
+        
     coefs = None
+    # ... (le reste de la fonction ne change pas)
     try:
         coefs = pipe.named_steps["clf"].coef_.ravel()
     except Exception:
@@ -450,7 +497,7 @@ def main():
             print(f"[WARN] Skipping {set_name}: too small for CV (n={len(lf.y)}).")
             continue
 
-        for model_tag in ["LR", "SVM", "RF", "MLP"]:
+        for model_tag in ["LR", "ET", "HGB", "KNN", "SVM", "RF", "MLP"]:
             try:
                 folds, summ = nested_cv_once(set_name, model_tag, lf.X, lf.y,
                                              OUTER_N_SPLITS, INNER_N_SPLITS)
