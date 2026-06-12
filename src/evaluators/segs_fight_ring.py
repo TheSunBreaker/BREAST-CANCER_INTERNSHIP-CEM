@@ -236,6 +236,25 @@ def compute_metrics_batch(
             w = csv.DictWriter(f, fieldnames=["id", "dice", "hd", "hdp"])
             w.writeheader()
             w.writerows(rows)
+
+            # Ligne vide
+            f.write("\n")
+    
+            # Résumé global
+            w.writerow({
+                "id": "MEAN",
+                "dice": dm,
+                "hd": hm,
+                "hdp": hpm
+            })
+                
+            w.writerow({
+                "id": "STD",
+                "dice": ds,
+                "hd": hs,
+                "hdp": hps
+            })
+      
         print(f"\n[SUCCÈS] CSV détaillé sauvegardé : {save_csv}")
 
     return rows, summary
