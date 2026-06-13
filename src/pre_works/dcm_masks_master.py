@@ -5,12 +5,20 @@ r"""
   Extracteur de Masques DICOM (V5 - Version Ultime, Fusion V3+V4).
 ===============================================================================
 
-ATTENTION : IL EXISTE UN BOOLEAN VAR GLOBALE QUI SPECIFIE SI ON VEUT DIFFERENCIER DE POTENTIELS GANGLIONS (2) DE TUMEURS (1) OU TOUS
-LES CONSIDERER COMME DES (1), QUI EST A 'FAUX' NORMALEMENT. (SI CHANGE, LE PRECISER ICI). 
-DE PLUS, SI ON PEUT FUSIONNER LES MASQUES MULTIPLES (DONC SHAPE SIMIAIRES), ON FUSIONNE. SINON, ON LAISSE SEPARES CAR ON PAR DU PRINCIPE
-QUE L'UN EST CALE SUR PET, L'AUTRE SUR CT (CAS PET ET CT). ET ALORS, L'ORCHESTRATEUR INTEGRE AU SCRIPT DE MISE EN STRUCTURE PET_CT VERS
-NNUNET, PRENDRA LE PREMIER MASQUE DES 2 QU'IL TROUVERA ET PROCEDERA AINSI AU CALAGE DU MASQUE SUR LE PET. MAIS CETTE ACTION SUPPOSE
-QUE DEUX MASQUES FUIONNABLES DE SHAPES DIFFERENTES SONT UN MEME MASQUE VERSION SHAPES DE PET ET VERSION SHAPE DE CT
+COMPORTEMENT MULTI-CLASSES & EXPORT :
+  Ce script gère automatiquement la différenciation entre les Tumeurs (Classe 1)
+  et les Ganglions/Nodules (Classe 2) via analyse sémantique des métadonnées.
+  
+  Le flag global `EXPORT_NODULES_SEPARATELY` contrôle la sortie :
+    - True  : Exporte les tumeurs dans `mask/` et les nodules dans `nodule/`.
+    - False : Fusionne toutes les classes dans un seul NIfTI multi-classes.
+
+GESTION DES GRILLES SPATIALES (SHAPES) :
+  Si plusieurs masques distincts sont détectés pour une même visite, ils sont 
+  fusionnés/regroupés UNIQUEMENT s'ils partagent exactement la même dimension 
+  (shape). S'ils ont des shapes différentes (ex: un masque calé sur le PET, 
+  l'autre sur le CT), ils sont conservés séparément avec leurs identifiants d'origine.
+  L'orchestrateur nnU-Net en aval se chargera du recalage approprié.
 
 HISTORIQUE DES VERSIONS :
   V3 : Analyse automatique multi-masques SEG (Dice, doublons, full-body).
@@ -25,7 +33,7 @@ HISTORIQUE DES VERSIONS :
        - Gestion robuste des erreurs : un masque illisible est explicitement
          compté comme rejeté et tracé dans le rapport.
        - Support RTSTRUCT (V4) conservé intégralement.
-       - Fusion sémantique multi-classes (V4) conservée intégralement.
+       - Fusion sémantique multi-classes ou génération masques différents tumeur-nodules conservées intégralement.
        - Auto-labélisation tumeur/ganglion (V4) conservée intégralement.
 
 PIPELINE GLOBAL :
@@ -50,11 +58,21 @@ STRUCTURE DES DOSSIERS ATTENDUE (générée par l'ingesteur) :
     DUKE_002/
       ...
 
-SORTIES GÉNÉRÉES :
+SORTIES GÉNÉRÉES (si EXPORT_NODULES_SEPARATELY = False) :
   <patient_dir>/mask/
-    <patient>_mask_<uid>_<dcm>.nii.gz      → masque individuel (1 seule lésion)
-    <patient>_mask_FUSED.nii.gz            → masque fusionné (lésions multiples)
+    <patient>_mask_<uid>_<dcm>.nii.gz      → masque individuel (tumeur ou nodule, classe 1 ou 2)
+    <patient>_mask_FUSED.nii.gz            → masque fusionné multi-classes
     a_verifier/                            → masques à inspecter manuellement
+  rapport_analyse_masques_v5.txt           → rapport global à la racine
+
+SORTIES GÉNÉRÉES (si EXPORT_NODULES_SEPARATELY = True) :
+  <patient_dir>/mask/
+    <patient>_mask_<uid>_<dcm>.nii.gz      → masque individuel (tumeur uniquement)
+    <patient>_mask_FUSED.nii.gz            → masque fusionné (tumeurs multiples)
+    a_verifier/                            → masques à inspecter manuellement
+  <patient_dir>/nodule/
+    <patient>_nodule_<uid>_<dcm>.nii.gz    → masque individuel (nodule uniquement)
+    <patient>_nodule_FUSED.nii.gz          → masque fusionné (nodules multiples)
   rapport_analyse_masques_v5.txt           → rapport global à la racine
 
 ===============================================================================
@@ -124,10 +142,10 @@ PLASTIMATCH_EXE = r"C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plast
 # termes recevra la classe 2 (ganglion lymphatique). Sinon : classe 1 (tumeur).
 NODE_KEYWORDS = ["GANGLION", "NODE", "LN", "LYMPH", "AXIL", "GTV-N", "GTVN"]
 
-# ── Séparation sémantique des ganglions ───────────────────────────────────────
-# True  : Tumeur = 1, Ganglion = 2 (Nécessite d'ajouter "lymph_node": 2 dans le dataset.json nnU-Net)
-# False : Tumeur et Ganglion sont tous les deux marqués avec la valeur 1 (Lésion globale)
-SEPARATE_LYMPH_NODE_CLASS = False
+# ── Séparation physique et sémantique des ganglions/nodules ───────────────────
+# True  : Exporte les tumeurs (1) dans "mask/" et les ganglions (2) dans "nodule/"
+# False : Fusionne tout en un seul fichier (classe 1) dans "mask/"
+EXPORT_NODULES_SEPARATELY = True
 
 # ==============================================================================
 # SECTION 2 — MODULE SÉMANTIQUE : AUTO-LABÉLISATION
@@ -182,7 +200,7 @@ def determine_mask_class(dicom_path: str) -> int:
         desc_upper = str(desc).upper()
         if any(kw in desc_upper for kw in NODE_KEYWORDS):
             # C'est un ganglion. Regardons ce que dictent les paramètres globaux :
-            if SEPARATE_LYMPH_NODE_CLASS:
+            if EXPORT_NODULES_SEPARATELY:
                 return 2  # Ganglion lymphatique séparé
             else:
                 return 1  # Lésion globale (Ganglion et tumeur partagent la classe 1)
@@ -714,7 +732,8 @@ def process_patient_masks(
     project_root    : str,
     mask_prefix     : str,
     global_log_lines: list[str],
-    global_manual_cases: list[str] = None
+    global_manual_cases: list[str] = None,
+    global_patients_with_both: set = None  # <--- NOUVEL ARGUMENT
 ) -> int:
     """
     Parcourt une racine de projet, traite tous les dossiers de masques correspondant
@@ -779,6 +798,7 @@ def process_patient_masks(
 
         for patient_id in patients:
             patient_dir = os.path.join(project_root, patient_id)
+            classes_trouvees_pour_ce_patient = set() # <--- INITIALISATION DU TRACKER
 
             # ── Détection dynamique des dossiers de masques de ce patient ─────
             # On cherche TOUS les dossiers qui commencent par mask_prefix :
@@ -967,7 +987,6 @@ def process_patient_masks(
                 # → Un seul NIfTI avec classe 1 = tumeur, classe 2 = ganglion
                 # =============================================================
                 if paths_to_convert["fuse"]:
-                    os.makedirs(dest_mask_dir, exist_ok=True)
 
                     # On récupère les données chargées du premier masque à fusionner
                     # pour initialiser la matrice résultat à la bonne shape
@@ -978,43 +997,89 @@ def process_patient_masks(
 
                     if fuse_data_list:
                         ref_data   = fuse_data_list[0]
-                        # Matrice de sortie : initialement tout à 0 (fond)
-                        fused_arr  = np.zeros(ref_data["shape"], dtype=np.uint8)
 
-                        global_log_lines.append(f"\n  Fusion de {len(fuse_data_list)} masques :")
+                        if not EXPORT_NODULES_SEPARATELY:
+                            # --- COMPORTEMENT D'ORIGINE : Tout dans un seul NIfTI ---
+                            os.makedirs(dest_mask_dir, exist_ok=True)
+                            # Matrice de sortie : initialement tout à 0 (fond)
+                            fused_arr  = np.zeros(ref_data["shape"], dtype=np.uint8)
+    
+                            global_log_lines.append(f"\n  Fusion de {len(fuse_data_list)} masques :")
+    
+                            for fuse_data in fuse_data_list:
+                                # Détermination de la classe sémantique (1 ou 2)
+                                class_label = determine_mask_class(fuse_data["path"])
+                                fname_fuse  = os.path.basename(fuse_data["path"])
+    
+                                msg_peinture = (
+                                    f"      + Peinture de '{fname_fuse}' → "
+                                    f"Classe {class_label} "
+                                    f"({'Tumeur' if class_label == 1 else 'Ganglion'})"
+                                )
+                                print(msg_peinture)
+                                global_log_lines.append(msg_peinture)
+    
+                                # Les voxels True de ce masque reçoivent la valeur de classe
+                                # Note : si deux masques se superposent malgré un Dice bas
+                                # (ex : voxels frontière), le dernier peint gagne.
+                                fused_arr[fuse_data["binary_mask"]] = class_label
+    
+                            # Construction de l'image SimpleITK finale avec les bonnes
+                            # métadonnées spatiales (copiées du premier masque de référence)
+                            final_img = sitk.GetImageFromArray(fused_arr)
+                            final_img.CopyInformation(ref_data["sitk_img"])
+    
+                            dest_name = f"{patient_id}_mask_FUSED.nii.gz"
+                            dest_path = os.path.join(dest_mask_dir, dest_name)
+                            sitk.WriteImage(final_img, dest_path)
+    
+                            ok_msg = f"  → [CONVERTI & FUSIONNÉ] {dest_name}"
+                            print(ok_msg)
+                            global_log_lines.append(ok_msg)
+                            masques_generes += 1
+                        else:
+                            # --- NOUVEAU COMPORTEMENT : Fusions séparées physiquement par classe ---
+                            classes_in_fuse = set(determine_mask_class(d["path"]) for d in fuse_data_list)
+                            global_log_lines.append(f"\n  Fusion (séparée) issue de {len(fuse_data_list)} masques originaux :")
 
-                        for fuse_data in fuse_data_list:
-                            # Détermination de la classe sémantique (1 ou 2)
-                            class_label = determine_mask_class(fuse_data["path"])
-                            fname_fuse  = os.path.basename(fuse_data["path"])
+                            # On boucle sur chaque classe présente (1 pour tumeur, 2 pour nodule)
+                            for target_class in classes_in_fuse:
+                                classes_trouvees_pour_ce_patient.add(target_class) # Trace pour le tableau de bord
+                                fused_arr = np.zeros(ref_data["shape"], dtype=np.uint8)
+                                nb_fused_for_this_class = 0
 
-                            msg_peinture = (
-                                f"      + Peinture de '{fname_fuse}' → "
-                                f"Classe {class_label} "
-                                f"({'Tumeur' if class_label == 1 else 'Ganglion'})"
-                            )
-                            print(msg_peinture)
-                            global_log_lines.append(msg_peinture)
+                                # Configuration des dossiers selon la classe
+                                if target_class == 2:
+                                    dest_dir = os.path.join(patient_dir, f"nodule{suffixe_temporel}")
+                                    dest_name = f"{patient_id}_nodule_FUSED.nii.gz"
+                                    type_str = "Nodule/Ganglion"
+                                else:
+                                    dest_dir = dest_mask_dir
+                                    dest_name = f"{patient_id}_mask_FUSED.nii.gz"
+                                    type_str = "Tumeur"
 
-                            # Les voxels True de ce masque reçoivent la valeur de classe
-                            # Note : si deux masques se superposent malgré un Dice bas
-                            # (ex : voxels frontière), le dernier peint gagne.
-                            fused_arr[fuse_data["binary_mask"]] = class_label
+                                os.makedirs(dest_dir, exist_ok=True)
 
-                        # Construction de l'image SimpleITK finale avec les bonnes
-                        # métadonnées spatiales (copiées du premier masque de référence)
-                        final_img = sitk.GetImageFromArray(fused_arr)
-                        final_img.CopyInformation(ref_data["sitk_img"])
+                                # On ne peint que les masques correspondants à la classe en cours
+                                for fuse_data in fuse_data_list:
+                                    if determine_mask_class(fuse_data["path"]) == target_class:
+                                        fname_fuse = os.path.basename(fuse_data["path"])
+                                        msg_peinture = f"      + Peinture de '{fname_fuse}' → {type_str}"
+                                        print(msg_peinture)
+                                        global_log_lines.append(msg_peinture)
+                                        fused_arr[fuse_data["binary_mask"]] = target_class
+                                        nb_fused_for_this_class += 1
 
-                        dest_name = f"{patient_id}_mask_FUSED.nii.gz"
-                        dest_path = os.path.join(dest_mask_dir, dest_name)
-                        sitk.WriteImage(final_img, dest_path)
+                                final_img = sitk.GetImageFromArray(fused_arr)
+                                final_img.CopyInformation(ref_data["sitk_img"])
+                                sitk.WriteImage(final_img, os.path.join(dest_dir, dest_name))
 
-                        ok_msg = f"  → [CONVERTI & FUSIONNÉ] {dest_name}"
-                        print(ok_msg)
-                        global_log_lines.append(ok_msg)
-                        masques_generes += 1
+                                ok_msg = f"  → [CONVERTI & FUSIONNÉ] {dest_name} (regroupe {nb_fused_for_this_class} élément(s))"
+                                print(ok_msg)
+                                global_log_lines.append(ok_msg)
+                                masques_generes += 1
 
+              
                 # =============================================================
                 # ACTION 2 : SAUVEGARDE INDIVIDUELLE (KEEP)
                 # Cas : un seul masque valide, ou une conversion simple
@@ -1045,7 +1110,17 @@ def process_patient_masks(
                     final_img = sitk.GetImageFromArray(arr_typed)
                     final_img.CopyInformation(data["sitk_img"])
 
-                    dest_name = f"{patient_id}_mask_{uid_suffix}_{original_dcm_name}.nii.gz"
+                    # Logique de nommage et routage basée sur la classe
+                    if class_label == 2 and EXPORT_NODULES_SEPARATELY:
+                        dest_nodule_name = f"nodule{suffixe_temporel}"
+                        current_dest_dir = os.path.join(patient_dir, dest_nodule_name)
+                        dest_name = f"{patient_id}_nodule_{uid_suffix}_{original_dcm_name}.nii.gz"
+                        type_str = "Nodule"
+                    else:
+                        current_dest_dir = dest_mask_dir
+                        dest_name = f"{patient_id}_mask_{uid_suffix}_{original_dcm_name}.nii.gz"
+                        type_str = "Tumeur"
+
                     dest_path = os.path.join(dest_mask_dir, dest_name)
                     sitk.WriteImage(final_img, dest_path)
 
@@ -1093,7 +1168,13 @@ def process_patient_masks(
                         f"{os.path.basename(rej_path)}"
                     )
                     global_log_lines.append(rej_msg)
+                  
+            # Mise à jour du tracker global en fin de visite pour ce patient
+            if 1 in classes_trouvees_pour_ce_patient and 2 in classes_trouvees_pour_ce_patient:
+                if global_patients_with_both is not None:
+                    global_patients_with_both.add(patient_id)
 
+  
     # ── Bilan de fin de passe ─────────────────────────────────────────────────
     bilan = (
         f"\n  BILAN PASSE [{mask_prefix}] :\n"
@@ -1180,13 +1261,15 @@ if __name__ == "__main__":
     ]
 
     global_manual_cases = []
+    patients_with_both = set()
 
     # ── PASSE 1 : Masques IRM baseline ───────────────────────────────────────
     process_patient_masks(
         project_root     = args.mri_root,
         mask_prefix      = "dicom_mask_rm",
         global_log_lines = global_log_lines,
-        global_manual_cases = global_manual_cases
+        global_manual_cases = global_manual_cases,
+        global_patients_with_both = patients_with_both
     )
 
     # ── PASSE 2 : Masques PET/CT baseline ────────────────────────────────────
@@ -1194,7 +1277,8 @@ if __name__ == "__main__":
         project_root     = args.petct_root,
         mask_prefix      = "dicom_mask_pet",
         global_log_lines = global_log_lines,
-        global_manual_cases = global_manual_cases
+        global_manual_cases = global_manual_cases,
+        global_patients_with_both = patients_with_both
     )
 
     # ── PASSE 3 : Masques orphelins IRM ──────────────────────────────────────
@@ -1205,7 +1289,8 @@ if __name__ == "__main__":
         project_root     = args.mri_root,
         mask_prefix      = "dicom_mask_orphelins",
         global_log_lines = global_log_lines,
-        global_manual_cases = global_manual_cases
+        global_manual_cases = global_manual_cases,
+        global_patients_with_both = patients_with_both
     )
 
     # ── PASSE 4 : Masques orphelins PET/CT ───────────────────────────────────
@@ -1213,19 +1298,47 @@ if __name__ == "__main__":
         project_root     = args.petct_root,
         mask_prefix      = "dicom_mask_orphelins",
         global_log_lines = global_log_lines,
-        global_manual_cases = global_manual_cases
+        global_manual_cases = global_manual_cases,
+        global_patients_with_both = patients_with_both
     )
 
     # --- NOUVEAU : CRÉATION DU TABLEAU DE BORD FINAL ---
     global_log_lines.append("\n" + "=" * 70)
     global_log_lines.append("  TABLEAU DE BORD DES ACTIONS REQUISES (INSPECTION MANUELLE)")
     global_log_lines.append("=" * 70)
+
+    # 1. Bilan inspection manuelle
     if not global_manual_cases:
-        global_log_lines.append("  -> AUCUN MASQUE NE REQUIERT D'INSPECTION MANUELLE. TOUT EST PROPRE.")
+        global_log_lines.append("  [INSPECTION MANUELLE] -> AUCUN MASQUE NE REQUIERT D'INSPECTION. TOUT EST PROPRE.")
     else:
-        global_log_lines.append(f"  -> {len(global_manual_cases)} MASQUE(S) NÉCESSITENT VOTRE ATTENTION :\n")
+        global_log_lines.append(f"  [INSPECTION MANUELLE] -> {len(global_manual_cases)} MASQUE(S) NÉCESSITENT VOTRE ATTENTION :\n")
         global_log_lines.extend(global_manual_cases)
+        
+    global_log_lines.append("-" * 70)
+    
+    # 2. Bilan Tumeur + Nodule
+    if EXPORT_NODULES_SEPARATELY:
+        liste_ids = sorted(list(patients_with_both))
+        if not liste_ids:
+            global_log_lines.append("  [STATISTIQUES] -> Aucun patient ne possède à la fois une Tumeur ET un Nodule/Ganglion.")
+        else:
+            global_log_lines.append(f"  [STATISTIQUES] -> {len(liste_ids)} patient(s) possède(nt) à la fois Tumeur ET Nodule :\n")
+            # Formatage propre (ex: affiche les IDs par groupes de 5 pour la lisibilité)
+            for i in range(0, len(liste_ids), 5):
+                global_log_lines.append("    " + ", ".join(liste_ids[i:i+5]))
+    
     global_log_lines.append("=" * 70 + "\n")
+    
+    # Affichage en console
+    print("\n" + "=" * 70)
+    print("  PATIENTS AVEC DOUBLE SEGMENTATION (TUMEUR + NODULE)")
+    print("=" * 70)
+    if EXPORT_NODULES_SEPARATELY and patients_with_both:
+        print(f"  Total : {len(patients_with_both)} patient(s)")
+        print("  IDs :", ", ".join(sorted(list(patients_with_both))))
+    else:
+        print("  Aucun ou fonction désactivée.")
+    print("=" * 70)
 
     # ── Écriture du rapport global ────────────────────────────────────────────
     # Tout est centralisé dans un seul fichier texte aux côtés du rapport
