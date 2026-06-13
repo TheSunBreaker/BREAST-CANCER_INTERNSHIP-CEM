@@ -30,6 +30,34 @@ import SimpleITK as sitk
 # --- Chemin Plastimatch (À adapter si besoin) ---
 PLASTIMATCH_EXE = r"C:\Users\coul0426\plastimatch_portable\Plastimatch\bin\plastimatch.exe"
 
+# --- Configuration Sémantique ---
+NODE_KEYWORDS = ["GANGLION", "NODE", "LN", "LYMPH", "AXIL", "GTV-N", "GTVN"]
+EXPORT_NODULES_SEPARATELY = True
+
+def determine_mask_class(dicom_path: str) -> int:
+    """Analyse les métadonnées pour déterminer la classe (1 = Tumeur, 2 = Nodule)."""
+    try:
+        ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
+        modality = getattr(ds, "Modality", "")
+        desc = ""
+
+        if modality == "SEG" and hasattr(ds, "SegmentSequence"):
+            for seg in ds.SegmentSequence:
+                seg_label = str(getattr(seg, "SegmentLabel", "")).upper()
+                seg_desc  = str(getattr(seg, "SegmentDescription", "")).upper()
+                if "BACKGROUND" not in seg_label and "BACKGROUND" not in seg_desc:
+                    desc = seg_desc + " " + seg_label
+                    break
+        elif modality == "RTSTRUCT" and hasattr(ds, "StructureSetROISequence") and len(ds.StructureSetROISequence) > 0:
+            desc = getattr(ds.StructureSetROISequence[0], "ROIName", "")
+
+        if any(kw in str(desc).upper() for kw in NODE_KEYWORDS):
+            return 2 if EXPORT_NODULES_SEPARATELY else 1
+        return 1
+    except Exception:
+        return 1
+      
+
 def find_reference_nifti(current_dir: str) -> str:
     """
     Cherche un NIfTI de référence pour rastériser les RTSTRUCT, 
@@ -69,7 +97,18 @@ def convert_single_mask(dcm_path: str, ref_nifti: str = None) -> bool:
     try:
         ds = pydicom.dcmread(dcm_path, stop_before_pixels=True, force=True)
         modality = getattr(ds, "Modality", "")
-        out_name = os.path.splitext(os.path.basename(dcm_path))[0] + "_manuel.nii.gz"
+        
+        # 1. Détermination de la classe sémantique
+        class_label = determine_mask_class(dcm_path)
+        
+        # 2. Nommage intelligent basé sur la configuration
+        base_name = os.path.splitext(os.path.basename(dcm_path))[0]
+        if EXPORT_NODULES_SEPARATELY:
+            type_str = "nodule" if class_label == 2 else "tumeur"
+            out_name = f"{base_name}_{type_str}_manuel.nii.gz"
+        else:
+            out_name = f"{base_name}_multiclasse_manuel.nii.gz"
+            
         out_path = os.path.join(os.path.dirname(dcm_path), out_name)
 
         # --- CAS 1 : DICOM SEG ---
@@ -83,20 +122,20 @@ def convert_single_mask(dcm_path: str, ref_nifti: str = None) -> bool:
                 label = str(getattr(seg_info, "SegmentLabel", "")).upper()
                 desc  = str(getattr(seg_info, "SegmentDescription", "")).upper()
                 if "BACKGROUND" not in label and "BACKGROUND" not in desc:
-                    clean_arr[arr == seg_val] = 1 # Valeur 1 par défaut pour le masque
+                    # Application de la classe (1 ou 2) au lieu du 1 codé en dur
+                    clean_arr[arr == seg_val] = class_label 
             
             clean_img = sitk.GetImageFromArray(clean_arr)
             clean_img.CopyInformation(result.image)
             sitk.WriteImage(clean_img, out_path)
-            print(f"[SUCCÈS] SEG converti : {out_name}")
+            print(f"[SUCCÈS] SEG converti : {out_name} (Classe {class_label})")
             return True
 
         # --- CAS 2 : RTSTRUCT ---
         elif modality == "RTSTRUCT":
             if not ref_nifti:
                 print(f"[ERREUR] RTSTRUCT ignoré ({os.path.basename(dcm_path)}).")
-                print(" -> Aucune image NIfTI de référence trouvée pour la rastérisation Plastimatch.")
-                print(" -> Solution : Copiez le NIfTI de l'image (ex: _T1.nii.gz) dans ce dossier.")
+                print(" -> Aucune image NIfTI de référence trouvée.")
                 return False
 
             commande = [
@@ -106,12 +145,23 @@ def convert_single_mask(dcm_path: str, ref_nifti: str = None) -> bool:
                 "--output-img", out_path,
                 "--output-type", "uint8"
             ]
+            # Plastimatch génère toujours des voxels de valeur 1 par défaut pour le binaire.
             subprocess.run(commande, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            print(f"[SUCCÈS] RTSTRUCT converti : {out_name} (Aligné sur {os.path.basename(ref_nifti)})")
+            
+            # Si on attend une classe 2, il faut recharger l'image Plastimatch, modifier les voxels et sauvegarder.
+            if class_label > 1:
+                rt_img = sitk.ReadImage(out_path)
+                rt_arr = sitk.GetArrayFromImage(rt_img)
+                rt_arr = rt_arr * class_label  # Conversion des voxels 1 en 2
+                final_rt_img = sitk.GetImageFromArray(rt_arr)
+                final_rt_img.CopyInformation(rt_img)
+                sitk.WriteImage(final_rt_img, out_path)
+
+            print(f"[SUCCÈS] RTSTRUCT converti : {out_name} (Classe {class_label}, Aligné sur {os.path.basename(ref_nifti)})")
             return True
 
         else:
-            return False # Fichier DICOM non masque
+            return False
 
     except Exception as e:
         print(f"[ÉCHEC] {os.path.basename(dcm_path)} : {e}")
