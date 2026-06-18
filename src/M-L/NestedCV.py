@@ -251,6 +251,7 @@ def load_single(name: str, path: str):
     print(f"[INFO] [{name}] original shape: {orig_shape}, after cleaning: {df.shape}")
 
     return LabeledFrame(X=X, y=y, id_series=ids, y_name=y_col, id_name=id_col)
+  
 def intersect_and_concatenate(frames: List[Tuple[str, LabeledFrame]]) -> LabeledFrame:
     for name, lf in frames:
         if lf.id_series is None:
@@ -289,7 +290,7 @@ def build_set(set_names: Tuple[str,...], singles: Dict[str, LabeledFrame]) -> Tu
 # --------------------------------------------------
 
 def base_preproc():
-    # C'est ici que tu construis "l'entonnoir" étape par étape
+    # C'est ici qu'on construit "l'entonnoir" étape par étape
     return [
         # 1. Gestion des valeurs manquantes
         ("imp", SimpleImputer(strategy="median")),
