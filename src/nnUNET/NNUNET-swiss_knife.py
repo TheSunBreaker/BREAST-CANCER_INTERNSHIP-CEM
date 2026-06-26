@@ -41,6 +41,13 @@ try:
     import torch
     from torch.utils.tensorboard import SummaryWriter
     TORCH_AVAILABLE = True
+
+    # --- AJOUT CRITIQUE POUR GERER LE SOUCI A LA VALIDATION POUR LES GROS VOLUMES ---
+    # Force PyTorch à utiliser le système de fichiers plutôt que la mémoire partagée (/dev/shm)
+    import torch.multiprocessing
+    torch.multiprocessing.set_sharing_strategy('file_system')
+    # --------------------------
+
 except ImportError:
     TORCH_AVAILABLE = False
 
@@ -65,7 +72,7 @@ def setup_env():
     env.setdefault("OMP_NUM_THREADS", "1")
 
     # --- AJOUT CRITIQUE POUR ÉVITER LE CRASH SHARED MEMORY ---
-    # Réduit drastiquement le nombre de workers (Défaut: 12) à 2 ou 4.
+    # Réduit drastiquement le nombre de workers (Défaut: 12) à 2 ou 4 ou moins.
     # L'entraînement sera un tout petit peu plus long, mais il ne crashera plus.
     env["nnUNet_n_proc_DA"] = "0" 
     # ---------------------------------------------------------
@@ -75,6 +82,15 @@ def setup_env():
     env["nnUNet_compile"] = "F"
     env["TORCH_COMPILE_DISABLE"] = "1"
     # ---------------------------------------------------------------
+
+    # --- LES MODIFFES POUR GERER L'EXPLOSION DE MEMOIRE EN VALIDATION POUR LES GROS VOLUMES, NIVEAU VARIABLES D'ENVIRONNEMENT ---
+    
+    # 1. Variable globale pour dire à certaines bibliothèques de ne pas paralléliser à outrance
+    env["MKL_NUM_THREADS"] = "1"
+
+    # 2. Limite le nombre de processus pour l'export des fichiers de prédiction de validation
+    # (Évite l'explosion de la RAM et du shm à la fin de l'entraînement)
+    env["nnUNet_export_pool_initializer_factor"] = "1"
 
     # --- SOLUTION LOGIQUE POUR LE RECOURS AU FLAG --USER DANS LE SERVEUR ---
     # On ajoute le répertoire des binaires locaux de l'utilisateur (~/.local/bin)
@@ -267,7 +283,7 @@ def do_preprocess(dataset_id: str, env_dict: dict):
     cmd = ["nnUNetv2_plan_and_preprocess", "-d", dataset_id, "--verify_dataset_integrity"]
     run_command(cmd, env_dict)
 
-def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_weights: str, trainer: str, env_dict: dict):
+def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_weights: str, trainer: str, val: bool, env_dict: dict):
     
     if not TORCH_AVAILABLE or not torch.cuda.is_available():
         print("[ERREUR CRITIQUE] CUDA ou PyTorch est indisponible sur ce système.")
@@ -284,6 +300,10 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
 
     for f in folds:
         cmd = ["nnUNetv2_train", dataset_id, config, f, "-tr", trainer]
+
+        if val:
+            print(f"[INFO] Mode VALIDATION UNIQUEMENT activé pour le fold {f}.")
+            cmd.append("--val")
         
         if resume:
             print(f"[INFO] Reprise sur sauvegarde activée (--c) pour le fold {f}.")
@@ -401,6 +421,10 @@ def main():
     parser.add_argument("-p", "--predictions", type=str, 
                         help="[EVALUATE] Dossier contenant les prédictions du modèle")
 
+    # Pour de la validation exclusivement (cas par exemple d'un crash au moment de la val
+    parser.add_argument("--val", action="store_true",
+                    help="[TRAIN] Exécute uniquement la validation finale (si l'entraînement est déjà fini)")
+
     args = parser.parse_args()
     
     # Configuration sécurisée de l'environnement (HPC)
@@ -411,7 +435,7 @@ def main():
             do_preprocess(args.dataset, env_dict)
             
         elif args.action == "train":
-            do_train(args.dataset, args.config, args.fold, args.resume, args.pretrained_weights, args.trainer, env_dict)
+            do_train(args.dataset, args.config, args.fold, args.resume, args.pretrained_weights, args.trainer, args.val, env_dict)
             
         elif args.action == "predict":
             if not args.input or not args.output:
