@@ -303,7 +303,7 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
 
         if val:
             print(f"[INFO] Mode VALIDATION UNIQUEMENT activé pour le fold {f}.")
-            cmd.append("--val")
+            cmd.append("--val_best")
         
         if resume:
             print(f"[INFO] Reprise sur sauvegarde activée (--c) pour le fold {f}.")
