@@ -67,8 +67,20 @@ def setup_env():
     env["nnUNet_raw"] = str(NNUNET_RAW)
     env["nnUNet_preprocessed"] = str(NNUNET_PREPROCESSED)
     env["nnUNet_results"] = str(NNUNET_RESULTS)
+
+    # On crée un dossier 'tmp' physique dans ton répertoire de travail
+    TMP_DIR = BASE_DIR / "tmp_pytorch"
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Force l'utilisation d'un seul thread pour certaines librairies C++ (HPC)
+    # On force tout l'écosystème à utiliser ce dossier physique plutôt que le /tmp de Docker
+    env["TMPDIR"] = str(TMP_DIR)
+    env["TEMP"] = str(TMP_DIR)
+    env["TMP"] = str(TMP_DIR)
+    # ---------------------------------------------------------
+
+    # LIMITATION STRICTE DU PARALLÉLISME
+    env["MKL_NUM_THREADS"] = "1"
+    env["OPENBLAS_NUM_THREADS"] = "1"
     env.setdefault("OMP_NUM_THREADS", "1")
 
     # --- AJOUT CRITIQUE POUR ÉVITER LE CRASH SHARED MEMORY ---
@@ -299,10 +311,23 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
     print(f"[INFO] Folds qui vont être entraînés séquentiellement : {folds}")
 
     for f in folds:
-        cmd = ["nnUNetv2_train", dataset_id, config, f, "-tr", trainer]
 
+        # Injection pour forcer le file_system dans le sous-processus de nnU-Net
+        # 1. Préparation de la commande d'injection pour forcer le file_system
+        python_cmd = (
+            "import sys, torch; "
+            "torch.multiprocessing.set_sharing_strategy('file_system'); "
+            "from nnunetv2.run.run_training import run_training_entry; "
+            "sys.argv[0] = 'nnUNetv2_train'; "
+            "sys.exit(run_training_entry())"
+        )
+        
+        # On construit la liste des arguments qui seront passés à sys.argv du sous-processus python
+        cmd = ["python3", "-c", python_cmd, dataset_id, config, f, "-tr", trainer]
+     
+        # 2. Gestion des options additionnelles
         if val:
-            print(f"[INFO] Mode VALIDATION UNIQUEMENT activé pour le fold {f}.")
+            print(f"[INFO] Mode VALIDATION UNIQUEMENT (Best Model) activé pour le fold {f}.")
             cmd.append("--val_best")
         
         if resume:
