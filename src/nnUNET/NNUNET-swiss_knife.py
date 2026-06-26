@@ -153,10 +153,6 @@ def setup_env():
     # 1. Variable globale pour dire à certaines bibliothèques de ne pas paralléliser à outrance
     env["MKL_NUM_THREADS"] = "1"
 
-    # 2. Limite le nombre de processus pour l'export des fichiers de prédiction de validation
-    # (Évite l'explosion de la RAM et du shm à la fin de l'entraînement)
-    env["nnUNet_export_pool_initializer_factor"] = "1"
-
     # --- SOLUTION LOGIQUE POUR LE RECOURS AU FLAG --USER DANS LE SERVEUR ---
     # On ajoute le répertoire des binaires locaux de l'utilisateur (~/.local/bin)
     # au début du PATH pour que subprocess trouve nnUNetv2_plan_and_preprocess
