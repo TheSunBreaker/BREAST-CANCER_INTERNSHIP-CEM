@@ -356,7 +356,15 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
     print(f"\n[HARDWARE] Entraînement lancé sur GPU : {gpu_name}")
     print(f"--- DÉMARRAGE ENTRAÎNEMENT (DS {dataset_id} | Config: {config} | Fold: {fold} | Trainer: {trainer}) ---")
 
-    folds = ["0", "1", "2", "3", "4"] if fold == "all" else [fold]
+    # Gestion dynamique : 'all', un seul fold, ou une liste de folds (ex: '1,2,3,4')
+    if fold == "all":
+        folds = ["0", "1", "2", "3", "4"]
+    elif "," in fold:
+        folds = [f.strip() for f in fold.split(",")]
+    else:
+        folds = [fold]
+        
+    print(f"[INFO] Folds qui vont être entraînés séquentiellement : {folds}")
     print(f"[INFO] Folds qui vont être entraînés séquentiellement : {folds}")
 
     for f in folds:
