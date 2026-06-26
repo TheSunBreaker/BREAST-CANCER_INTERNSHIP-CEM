@@ -315,8 +315,14 @@ def do_train(dataset_id: str, config: str, fold: str, resume: bool, pretrained_w
         # Injection pour forcer le file_system dans le sous-processus de nnU-Net
         # 1. Préparation de la commande d'injection pour forcer le file_system
         python_cmd = (
-            "import sys, torch; "
+            "import sys, os, torch; "
+            "tmp_dir = os.path.abspath('./nnunet_data/tmp_pytorch'); "
+            "os.makedirs(tmp_dir, exist_ok=True); "
+            "os.environ['TMPDIR'] = tmp_dir; "
             "torch.multiprocessing.set_sharing_strategy('file_system'); "
+            "torch.multiprocessing.set_sharing_dir(tmp_dir); "  # LA FONCTION MAGIQUE EST ICI
+            "import nnunetv2.configuration; "
+            "nnunetv2.configuration.default_num_processes = 1; "
             "from nnunetv2.run.run_training import run_training_entry; "
             "sys.argv[0] = 'nnUNetv2_train'; "
             "sys.exit(run_training_entry())"
