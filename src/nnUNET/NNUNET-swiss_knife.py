@@ -25,6 +25,68 @@ Cloner le git nnUNet et suivre les instructions du git.
 
 ATTENTION, SUR LE SERVER SUR LEQUEL A ETE TESTE CE CODE, LA MEMOIRE PARTAGEE DES DOCKERS LIMITEE ENPECHE D'UTILISER PLUSIEURS WORKERS POUR LE DATALOADER ET LA DATA AUGMNTATION. ALORS IL FAUT 0 COMME NOMBRE DE WORKERS
 DE LA VARIABLE D'ENVIRONNEMENT 'nnUNet_n_proc_DA'. VOIR JUSTE EN BAS DANS LE CODE. CPEENDANT, LE PREPROCESSING LUI NE SUPPORTE PAS 0. ALORS IL VAUT MIEEUX METTRE A 1 POUR LE PREPROCESSING ET A 0 POUR LE TRAIN
+
+!!!!!!!!
+ATENTION
+!!!!!!!!
+Il a fallut modifier le code nnUNet du fichier nnUNet/nnunetv2/training/nnUNetTrainer/nnUNetTrainer.py” vers la ligne 1335... 
+
+disable_parallel_export = os.environ.get(
+                    "NNUNET_DISABLE_PARALLEL_VAL_EXPORT",
+                    "0"
+                ) == "1"
+                
+                if disable_parallel_export:
+                    export_prediction_from_logits(
+                        prediction,
+                        properties,
+                        self.configuration_manager,
+                        self.plans_manager,
+                        self.dataset_json,
+                        output_filename_truncated,
+                        save_probabilities
+                    )
+                else:
+                    results.append(
+                        segmentation_export_pool.starmap_async(
+                            export_prediction_from_logits,
+                            (
+                                (
+                                    prediction,
+                                    properties,
+                                    self.configuration_manager,
+                                    self.plans_manager,
+                                    self.dataset_json,
+                                    output_filename_truncated,
+                                    save_probabilities
+                                ),
+                            )
+                        )
+                    )
+
+
+Voici ci-dessus ce que ça devient, en remplacement de 
+
+
+                #results.append(
+                    #segmentation_export_pool.starmap_async(
+                        #export_prediction_from_logits, (
+                            #(prediction, properties, self.configuration_manager, self.plans_manager,
+                             #self.dataset_json, output_filename_truncated, save_probabilities),
+                        #)
+                    #)
+                #)
+
+qui est désormais commenté.
+Il faut donc interragir avec la var d'environnement 
+env["NNUNET_DISABLE_PARALLEL_VAL_EXPORT"]
+pour parralléliser ou non l'inférence en validation...
+
+Cela a été nécessaire car sur gros volumes, sur le serveur utilisé, la faible mémoire partagée Docker rend compliqué le parrallélisme... 
+
+!!!!!!!!
+ATENTION
+!!!!!!!!
 """
 
 import os
@@ -76,6 +138,9 @@ def setup_env():
     # L'entraînement sera un tout petit peu plus long, mais il ne crashera plus.
     env["nnUNet_n_proc_DA"] = "0" 
     # ---------------------------------------------------------
+
+    # VARIABLE D'ENV CREEE ET AJOUTEE AU SCRIPT DE TRAIN NNUNET POUR DESACTIVER LE PARRALLELISME LORS DE L'INFERENCE DE VALIDATION. METTRE A 0 POUR PARRALLELISER.
+    env["NNUNET_DISABLE_PARALLEL_VAL_EXPORT"] = "1"
 
     # --- NOUVELLE SÉCURITÉ ANTI-CRASH COMPILATEUR (Triton / gcc) ---
     # Désactive torch.compile pour éviter l'erreur "Failed to find C compiler"
