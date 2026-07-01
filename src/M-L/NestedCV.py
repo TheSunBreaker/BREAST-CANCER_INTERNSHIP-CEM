@@ -40,7 +40,8 @@ from sklearn.neural_network import MLPClassifier
 
 from sklearn.base import BaseEstimator, TransformerMixin
 
-from boruta import BorutaPy # Boruta
+from lightgbm import LGBMClassifier
+#from boruta import BorutaPy # Boruta est trop instable et trop lourd surtout sur petits datasets
 
 import joblib # Pour sauvegarder le meilleur modèle trouvé
 
@@ -60,7 +61,7 @@ RANDOM_STATE   = 42
 
 # --- MAINTENANT ---
 # Feature-count grid pour la réduction douce (SelectKBest) avant l'Elastic Net
-K_GRID         = [50, 100, 200, 300]
+K_GRID         = [50, 100, 300]
 
 # --- DÉFINITION DES SÉLECTEURS ---
 # 1. Sélecteur Linéaire (ElasticNet robuste)
@@ -71,16 +72,29 @@ selector_elasticnet = SelectFromModel(
 selector_extratrees = SelectFromModel(
     ExtraTreesClassifier(n_estimators=100, random_state=42)
 )
-# 3. Boruta (Très lourd, très très lourd, donc à utiliser seulement si beaucoup de coeurs. Dans mon cas, sera testé sur serveur à 48 coeurs)
-rf_boruta = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1) # n_jobs à -1 pour dire on parrallélise sur tous les coeurs disponibles
-selector_boruta = BorutaPy(rf_boruta, n_estimators='auto', verbose=0, random_state=42)
+# 3. Boruta (Très lourd, très très lourd, donc à utiliser seulement si beaucoup de coeurs. Dans mon cas, sera testé sur serveur à 48 coeurs si jamais ça devait être gardé)
+#rf_boruta = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1) # n_jobs à -1 pour dire on parrallélise sur tous les coeurs disponibles
+#selector_boruta = BorutaPy(rf_boruta, n_estimators='auto', verbose=0, random_state=42)
+
+# 4. Selecteur lgbm
+selector_lgbm = SelectFromModel(
+    LGBMClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        n_jobs=-1
+    )
+)
 
 # Per-model param grids (small & safe for tiny cohorts)
 GRIDS = {
 
     "ET": {
         "kbest_soft__k": K_GRID,
-        "multivariate_selector": ["passthrough", selector_extratrees, selector_boruta], # <-- Sélecteurs Non-Linéaire !
+        "multivariate_selector": ["passthrough", selector_extratrees, selector_lgbm], # <-- Sélecteurs Non-Linéaire !
         "clf__n_estimators": [100, 200],
         "clf__max_depth": [None, 3, 5],
         "clf__min_samples_leaf": [1, 2, 3],
@@ -90,7 +104,7 @@ GRIDS = {
 
     "HGB": {
         "kbest_soft__k": K_GRID,
-        "multivariate_selector": ["passthrough", selector_extratrees, selector_boruta], # <-- Sélecteurs Non-Linéaire !
+        "multivariate_selector": ["passthrough", selector_extratrees, selector_lgbm], # <-- Sélecteurs Non-Linéaire !
         "clf__learning_rate": [0.01, 0.1],
         "clf__max_iter": [100, 200],
         "clf__max_depth": [1, 3, 5],
@@ -102,7 +116,7 @@ GRIDS = {
 
    "KNN": {
         "kbest_soft__k": K_GRID,
-        "multivariate_selector": [selector_extratrees, selector_boruta], # <-- Sélecteurs Non-Linéaire !
+        "multivariate_selector": [selector_extratrees, selector_lgbm], # <-- Sélecteurs Non-Linéaire !
         "clf__n_neighbors": [3, 5, 7],
         "clf__weights": ["uniform", "distance"],
         "clf__metric": ["euclidean", "manhattan"],
@@ -127,7 +141,7 @@ GRIDS = {
     },
     "RF": {
         "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
-        "multivariate_selector": ["passthrough", selector_extratrees, selector_boruta], # Le serveur va transpirer en tout cas de tous ses coeurs
+        "multivariate_selector": ["passthrough", selector_extratrees, selector_lgbm], # Le serveur va transpirer en tout cas de tous ses coeurs
         "clf__n_estimators": [200],
         "clf__max_depth": [None, 3, 5],
         "clf__min_samples_leaf": [1, 2, 3],
@@ -136,7 +150,7 @@ GRIDS = {
     },
     "MLP": {
         "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
-        "multivariate_selector": [selector_extratrees, selector_boruta],
+        "multivariate_selector": [selector_extratrees, selector_lgbm],
         "clf__hidden_layer_sizes": [(16,), (32,), (32,16)],
         "clf__alpha": [1e-4, 1e-3],
         "clf__learning_rate_init": [1e-3, 3e-3],
