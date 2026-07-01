@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
 """
-Nested CV comparison across modalities (and their fusions) with multiple classifiers.
+Pipeline de Prédiction pCR : Nested Cross-Validation Multimodale
+----------------------------------------------------------------
+Ce pipeline réalise la prédiction de la réponse pCR (Pathological Complete Response) 
+en utilisant une architecture multi-étages de sélection de variables, conçue 
+pour traiter des données radiomiques de haute dimension (p >> n).
 
-Models compared per set:
-- LogisticRegression
-- SVC (linear & RBF, probability=True)
-- RandomForestClassifier
-- MLPClassifier (small, early_stopping)
+Workflow du Pipeline :
+1. Fusion : Alignement des données cliniques, IRM (DCE) et PET-CT par identifiant (ID).
+2. Prétraitement : Imputation (médiane), Standardisation (Z-score).
+3. Sélection multi-étages (Entonnoir) :
+    a. Pré-filtrage : Suppression des variables à variance nulle et redondantes (Corrélation > 0.95).
+    b. Réduction douce : Filtre univarié (SelectKBest, Mutual Information) pour isoler les ~300 meilleures features.
+    c. Sélection multivariée : Sélecteur adaptatif selon le modèle (ElasticNet pour modèles linéaires, 
+       ExtraTrees ou LightGBM pour modèles non-linéaires).
+4. Évaluation : Nested Cross-Validation (3-fold Outer, 3-fold Inner) pour éviter tout 
+   Data Leakage et assurer la robustesse des performances.
 
-Preprocessing (inside folds): median impute -> StandardScaler -> SelectKBest(mutual_info_classif)
-Fusion sets use ID intersection; fused feature names are prefixed per modality.
+Algorithmes comparés :
+- Linéaires : Logistic Regression (LR), Support Vector Machine (SVM).
+- Non-linéaires : Random Forest (RF), ExtraTrees (ET), HistGradientBoosting (HGB), KNN, MLP.
 
-Outputs in ./_modality_outputs:
-  - summary_metrics.csv  (one row per set x model, mean±sd of ROC-AUC, PR-AUC, BalAcc, F1)
-  - <set>__<model>_outercv_metrics.csv  (per outer-fold metrics + best params)
-  - <set>__<model>_selected_features.csv (optional, refit on all data with representative best params)
+Outputs (sauvegardés dans ./_modality_outputs) :
+- summary_metrics.csv : Performances agrégées (Moyenne ± Écart-type).
+- <set>__<model>_outercv_metrics.csv : Détails par fold + Matrice de confusion.
+- <set>__<model>_selected_features.csv : Liste des variables finales retenues.
+- <set>__<model>_FINAL_MODEL.joblib : Modèle complet entraîné (Pipeline + Poids).
 """
 
 from __future__ import annotations
