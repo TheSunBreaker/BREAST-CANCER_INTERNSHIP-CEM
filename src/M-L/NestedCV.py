@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from sklearn.feature_selection import SelectKBest, mutual_info_classif, SelectFromModel
+from sklearn.feature_selection import SelectKBest, mutual_info_classif, SelectFromModel, VarianceThreshold
 from sklearn.model_selection import StratifiedKFold, GridSearchCV
 from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score, f1_score, confusion_matrix
 
@@ -37,6 +37,10 @@ from sklearn.linear_model import LogisticRegression, SGDClassifier # Très prati
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier, ExtraTreesClassifier
 from sklearn.neural_network import MLPClassifier
+
+from sklearn.base import BaseEstimator, TransformerMixin
+
+from boruta import BorutaPy # Boruta
 
 import joblib # Pour sauvegarder le meilleur modèle trouvé
 
@@ -56,15 +60,28 @@ RANDOM_STATE   = 42
 
 # --- MAINTENANT ---
 # Feature-count grid pour la réduction douce (SelectKBest) avant l'Elastic Net
-K_GRID         = [100, 200, 300]
+K_GRID         = [50, 100, 200, 300]
+
+# --- DÉFINITION DES SÉLECTEURS ---
+# 1. Sélecteur Linéaire (ElasticNet robuste)
+selector_elasticnet = SelectFromModel(
+    LogisticRegression(penalty='elasticnet', solver='saga', l1_ratio=0.5, max_iter=2000, random_state=42) # 0.5 veut dire fifty fifty entre régulations L1 et L2
+)
+# 2. Sélecteur Arbre (Rapide et Robuste)
+selector_extratrees = SelectFromModel(
+    ExtraTreesClassifier(n_estimators=100, random_state=42)
+)
+# 3. Boruta (Très lourd, très très lourd, donc à utiliser seulement si beaucoup de coeurs. Dans mon cas, sera testé sur serveur à 48 coeurs)
+rf_boruta = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1) # n_jobs à -1 pour dire on parrallélise sur tous les coeurs disponibles
+selector_boruta = BorutaPy(rf_boruta, n_estimators='auto', verbose=0, random_state=42)
 
 # Per-model param grids (small & safe for tiny cohorts)
 GRIDS = {
 
     "ET": {
         "kbest_soft__k": K_GRID,
-        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1],
-        "clf__n_estimators": [200],
+        "multivariate_selector": ["passthrough", selector_extratrees, selector_boruta], # <-- Sélecteurs Non-Linéaire !
+        "clf__n_estimators": [100, 200],
         "clf__max_depth": [None, 3, 5],
         "clf__min_samples_leaf": [1, 2, 3],
         "clf__class_weight": ["balanced"],
@@ -73,10 +90,10 @@ GRIDS = {
 
     "HGB": {
         "kbest_soft__k": K_GRID,
-        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1],
+        "multivariate_selector": ["passthrough", selector_extratrees, selector_boruta], # <-- Sélecteurs Non-Linéaire !
         "clf__learning_rate": [0.01, 0.1],
         "clf__max_iter": [100, 200],
-        "clf__max_depth": [3, 5],
+        "clf__max_depth": [1, 3, 5],
         "clf__min_samples_leaf": [2, 5],
         "clf__random_state": [RANDOM_STATE],
         # HistGradientBoosting ne prend pas 'class_weight="balanced"' nativement dans sklearn, 
@@ -85,7 +102,7 @@ GRIDS = {
 
    "KNN": {
         "kbest_soft__k": K_GRID,
-        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1],
+        "multivariate_selector": [selector_extratrees, selector_boruta], # <-- Sélecteurs Non-Linéaire !
         "clf__n_neighbors": [3, 5, 7],
         "clf__weights": ["uniform", "distance"],
         "clf__metric": ["euclidean", "manhattan"],
@@ -93,7 +110,7 @@ GRIDS = {
   
     "LR": {
         "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
-        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
+        "multivariate_selector": ["passthrough", selector_elasticnet], # Ligne droite avec ligne droite
         "clf__C":   [0.1, 1.0, 3.0, 10.0],
         "clf__penalty": ["l2"],
         "clf__solver": ["liblinear"],
@@ -101,7 +118,7 @@ GRIDS = {
     },
     "SVM": {
         "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
-        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
+        "multivariate_selector": ["passthrough", selector_elasticnet],
         "clf__kernel": ["linear", "rbf"],
         "clf__C": [0.1, 1.0, 3.0, 10.0],
         "clf__gamma": ["scale"],   # for rbf
@@ -110,7 +127,7 @@ GRIDS = {
     },
     "RF": {
         "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
-        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
+        "multivariate_selector": ["passthrough", selector_extratrees, selector_boruta], # Le serveur va transpirer en tout cas de tous ses coeurs
         "clf__n_estimators": [200],
         "clf__max_depth": [None, 3, 5],
         "clf__min_samples_leaf": [1, 2, 3],
@@ -119,7 +136,7 @@ GRIDS = {
     },
     "MLP": {
         "kbest_soft__k": K_GRID, # Renommé pour correspondre au pipeline
-        "elastic_net_selector__estimator__alpha": [0.001, 0.01, 0.1], # Force de la sélection Elastic Net
+        "multivariate_selector": [selector_extratrees, selector_boruta],
         "clf__hidden_layer_sizes": [(16,), (32,), (32,16)],
         "clf__alpha": [1e-4, 1e-3],
         "clf__learning_rate_init": [1e-3, 3e-3],
@@ -164,6 +181,37 @@ class LabeledFrame:
 
 POSSIBLE_LABELS = ["pcr", "pcrstatus", "label"]
 POSSIBLE_IDS    = ["subject_id", "patient_id", "id"]
+
+# Classe pour la mise en place du premier filtre (statistique : Partie Corrélation)
+class CorrelationFilter(BaseEstimator, TransformerMixin):
+    def __init__(self, threshold=0.95):
+        self.threshold = threshold
+        self.support_ = None
+        
+    def fit(self, X, y=None):
+        # Convertir en DataFrame pour calculer la corrélation facilement
+        df = pd.DataFrame(X) # Marche même si X est un array NumPy du StandardScaler
+        corr = df.corr().abs()
+        upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+
+        # Trouver les colonnes à supprimer
+        to_drop = [c for c in upper.columns if any(upper[c] > self.threshold)]
+
+        # Créer le masque booléen (True = on garde, False = on jette)
+        self.support_ = np.ones(df.shape[1], dtype=bool)
+        self.support_[to_drop] = False
+        return self
+        
+    def transform(self, X):
+        # Appliquer le masque (gère NumPy array et DataFrame)
+        if isinstance(X, pd.DataFrame):
+            return X.loc[:, self.support_]
+        return X[:, self.support_]
+        
+    def get_support(self, indices=False):
+        if indices:
+            return np.where(self.support_)[0]
+        return self.support_
 
 def _find_column(df: pd.DataFrame, candidates):
     lower = {c.lower(): c for c in df.columns}
@@ -294,22 +342,25 @@ def base_preproc():
     return [
         # 1. Gestion des valeurs manquantes
         ("imp", SimpleImputer(strategy="median")),
-        
-        # 2. Standardisation (z-score, calculé uniquement sur le fold d'entraînement)
+
+        # 2. Filtre de variance (avant propos de l'étage 1 du filtre des features)
+        ("filter_variance", VarianceThreshold(threshold=0.0)),
+      
+        # 3. Standardisation (z-score, calculé uniquement sur le fold d'entraînement)
         ("scaler", StandardScaler()),
         
-        # 3. Filtre Univarié ("Réduction douce")
-        # On garde par exemple les 300 meilleures variables pour soulager l'ElasticNet.
-        # Ce 'k' peut d'ailleurs être mis dans notre GridSearch !
+        # 3. ########################### Filtres selecteurs de varaibles ###########################
+        ##### Etage 1 :
+        # Filtre de corrélation intra-CV
+        ("filter_corr", CorrelationFilter(threshold=0.95)),
+        ##### Etage 2 :
+        # Filtre univarié ("Réduction douce")
+        # On garde entre les 100 à 300 meilleures variables pour soulager l'étage suivant.
+        # Ce 'k' (50, 100, 200, 300) sera d'ailleurs mis dans notre GridSearch !
         ("kbest_soft", SelectKBest(mutual_info_classif, k=300)), 
-        
-        # 4. Sélection Multivariée (Elastic Net)
-        # On utilise une régression logistique pénalisée en Elastic Net pour sélectionner
-        # les variables qui "travaillent bien ensemble".
-        # l1_ratio=0.5 signifie un équilibre parfait entre LASSO et Ridge.
-        ("elastic_net_selector", SelectFromModel(
-            SGDClassifier(loss="log_loss", penalty="elasticnet", l1_ratio=0.5, random_state=42)
-        ))
+        ##### Etage 3 :
+        # Sélection Multivariée (Selon modèle) mis à tunnel simple par défaut
+        ("multivariate_selector", "passthrough")
     ]
 
 def get_model_and_grid(tag: str):
@@ -468,22 +519,41 @@ def refit_write_features(set_name: str, model_tag: str, X: pd.DataFrame, y: pd.S
                            
     # Sauvegarde du modèle complet (Pipeline + Poids)
     joblib.dump(pipe, outdir / f"{set_name}__{model_tag}_FINAL_MODEL.joblib")
-
-    # --- NOUVELLE LOGIQUE D'EXTRACTION À DEUX ÉTAGES ---
+                           
+    # --- LOGIQUE D'EXTRACTION À 4 ÉTAGES (Robuste et en cascade) ---
     try:
-        # 1. Variables qui ont survécu au KBest
-        mask_kbest = pipe.named_steps["kbest_soft"].get_support()
-        features_after_kbest = np.array(X.columns)[mask_kbest]
+        # Étage 1 : Filtre de Variance
+        mask_var = pipe.named_steps["filter_variance"].get_support()
+        feat_after_var = np.array(X.columns)[mask_var]
         
-        # 2. Variables qui ont survécu à l'Elastic Net
-        mask_enet = pipe.named_steps["elastic_net_selector"].get_support()
-        selected = list(features_after_kbest[mask_enet])
+        # Étage 2 : Filtre de Corrélation
+        mask_corr = pipe.named_steps["filter_corr"].get_support()
+        feat_after_corr = feat_after_var[mask_corr] # On cascade sur le résultat précédent !
+        
+        # Étage 3 : Variables survivantes au KBest
+        mask_kbest = pipe.named_steps["kbest_soft"].get_support()
+        feat_after_kbest = feat_after_corr[mask_kbest]
+        
+        # Étage 4 : Variables survivantes au sélecteur Multivarié (ElasticNet, ET, ou Boruta)
+        multivariate_step = pipe.named_steps["multivariate_selector"]
+        
+        if multivariate_step != "passthrough":
+            # Astuce pour gérer BorutaPy qui n'a parfois pas de fonction get_support()
+            if hasattr(multivariate_step, 'get_support'):
+                mask_multi = multivariate_step.get_support()
+            else:
+                mask_multi = multivariate_step.support_
+                
+            selected = list(feat_after_kbest[mask_multi])
+        else:
+            selected = list(feat_after_kbest)
+            
     except Exception as e:
-        print(f"[WARN] Erreur d'extraction des features : {e}")
-        selected = list(X.columns)  # Fallback
+        print(f"[WARN] Erreur d'extraction des features en cascade : {e}")
+        selected = list(X.columns)  # Fallback de sécurité
         
     coefs = None
-    # ... (le reste de la fonction ne change pas)
+                           
     try:
         coefs = pipe.named_steps["clf"].coef_.ravel()
     except Exception:
