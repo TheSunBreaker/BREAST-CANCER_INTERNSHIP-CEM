@@ -49,16 +49,16 @@ from utils.spatial_standardizer import enforce_strict_alignment
 
 def get_target_times(num_channels: int) -> list:
     """
-    Définit les cibles physiologiques idéales en secondes post-début d'acquisition.
-    Ces temps sont standards pour la cinétique du cancer du sein (Wash-in, Plateau, Wash-out).
+    Retourne une description textuelle des cibles physiologiques pour les logs console.
+    Reflète la stratégie Jump-Anchored (Ancrage sur l'injection).
     """
-    targets = [0.0] # Canal 0 est TOUJOURS la Baseline (T0 / Pré-contraste)
+    targets = ["T_Baseline (Canal 0)"] 
     if num_channels >= 2:
-        targets.append(90.0)  # Canal 1 : Pic précoce / Wash-in (Arteriel)
+        targets.append("T_inj / Wash-in (Canal 1)")
     if num_channels >= 3:
-        targets.append(180.0) # Canal 2 : Plateau / Début de lavage
+        targets.append("T_inj + 90s (Canal 2)")
     if num_channels >= 4:
-        targets.append(360.0) # Canal 3 : Wash-out tardif
+        targets.append("T_inj + 180s (Canal 3)")
     return targets
 
 # ============================================================================
@@ -230,7 +230,7 @@ def select_best_dce_phases_jump_anchored(timeline: list, num_channels: int, nb_f
         
     # --- CANAUX SUIVANTS : COHÉRENCE CINÉTIQUE PHYSIOLOGIQUE ---
     # Jalons BI-RADS standards : +90s (Pic précoce / Plateau), +180s (Wash-out / Phase tardive)
-    target_deltas_post_inj = [90.0, 180.0, 360.0] 
+    target_deltas_post_inj = [90.0, 180.0] 
     
     for i in range(2, num_channels):
         cible_absolue = t_washin_initial + target_deltas_post_inj[i - 2]
