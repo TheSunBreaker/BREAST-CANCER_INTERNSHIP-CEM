@@ -160,80 +160,78 @@ def make_isotropic_crop_pad(
         print(f"   [ERREUR FATALE] {os.path.basename(image_path)} : {e}")
         return 0
 
-def orchestrate_custom_cnn_tensors(
-    subjects_dir: str, 
+def orchestrate_custom_cnn_tensors_from_nnunet(
+    imagesTr_dir: str, 
+    labelsTr_dir: str,
     out_dir: str, 
-    modality: str = "MRI", 
+    modality: str = "MRI", # "MRI" ou "PETCT"
     target_shape: tuple = (64, 64, 64)
 ):
-    print(f"\n--- Génération Tenseurs CNN ({modality}) | Cible : {target_shape} ---")
+    print(f"\n--- Génération Tenseurs CNN ({modality}) depuis nnU-Net | Cible : {target_shape} ---")
     
-    subjects = sorted([s for s in os.listdir(subjects_dir) if os.path.isdir(os.path.join(subjects_dir, s))])
-    total_lesions = 0
+    # Dans nnU-Net, le dossier labelsTr contient exactement un fichier par patient (ex: Patient01.nii.gz)
+    # C'est la méthode la plus sûre pour lister nos patients valides.
+    patients = [f.replace('.nii.gz', '') for f in os.listdir(labelsTr_dir) if f.endswith('.nii.gz')]
+    valid_count = 0
     
-    for subj in tqdm(subjects, desc="Traitement Patients"):
-        subj_path = os.path.join(subjects_dir, subj)
-        imgs_dir = os.path.join(subj_path, "imgs")
-        mask_dir = os.path.join(subj_path, "mask")
-        
-        if not os.path.exists(imgs_dir) or not os.path.exists(mask_dir):
-            continue
-            
-        masks = sorted(glob.glob(os.path.join(mask_dir, "*.nii.gz")))
-        if not masks:
-            continue
-            
+    for subj in tqdm(patients, desc="Traitement Patients"):
+        mask_path = os.path.join(labelsTr_dir, f"{subj}.nii.gz")
         out_subj_dir = os.path.join(out_dir, subj)
         
         # ==========================================================
-        # BRANCHE IRM
+        # BRANCHE IRM (DCE Multi-phases)
         # ==========================================================
         if modality == "MRI":
-            target_spacing = (1.0, 1.0, 1.0) 
-            imgs = sorted(glob.glob(os.path.join(imgs_dir, "*_00*.nii.gz")))
+            target_spacing = (1.0, 1.0, 1.0)
+            # Dans nnU-Net, les phases s'appellent Patient01_0000.nii.gz, Patient01_0001.nii.gz, etc.
+            img_files = sorted(glob.glob(os.path.join(imagesTr_dir, f"{subj}_*.nii.gz")))
             
-            for idx, img_path in enumerate(imgs):
-                base_img = os.path.join(out_subj_dir, f"{subj}_MRI_phase{idx}.nii.gz")
-                base_mask = os.path.join(out_subj_dir, f"{subj}_MRI_mask.nii.gz")
+            for idx, img_path in enumerate(img_files):
+                out_img = os.path.join(out_subj_dir, f"{subj}_MRI_phase{idx}.nii.gz")
+                out_mask = os.path.join(out_subj_dir, f"{subj}_MRI_mask.nii.gz")
                 
-                n_lesions = make_isotropic_crop_pad(
-                    image_path=img_path, mask_path=masks[0],
-                    base_out_img_path=base_img, base_out_mask_path=base_mask,
+                success = make_isotropic_crop_pad(
+                    image_path=img_path, mask_path=mask_path,
+                    out_img_path=out_img, out_mask_path=out_mask,
                     target_spacing=target_spacing, target_shape=target_shape, pad_value=0.0
                 )
-                if idx == 0: # On ne compte les lésions qu'une fois par patient (à la phase 0)
-                    total_lesions += n_lesions
+                if success: valid_count += 1
 
         # ==========================================================
-        # BRANCHE PET/CT
+        # BRANCHE PET/CT (Double extraction multimodale)
         # ==========================================================
         elif modality == "PETCT":
             target_spacing = (2.0, 2.0, 2.0)
-            ct_files = glob.glob(os.path.join(imgs_dir, "*TDM*.nii.gz"))
-            pet_files = glob.glob(os.path.join(imgs_dir, "*SUV*.nii.gz"))
             
-            if not ct_files or not pet_files:
+            # Dans nnU-Net, le canal 0000 est le PET, le canal 0001 est le CT
+            pet_path = os.path.join(imagesTr_dir, f"{subj}_0000.nii.gz")
+            ct_path = os.path.join(imagesTr_dir, f"{subj}_0001.nii.gz")
+            
+            if not os.path.exists(pet_path) or not os.path.exists(ct_path):
                 continue
                 
-            base_ct = os.path.join(out_subj_dir, f"{subj}_CT.nii.gz")
-            base_mask = os.path.join(out_subj_dir, f"{subj}_PETCT_mask.nii.gz")
-            n_lesions_ct = make_isotropic_crop_pad(
-                image_path=ct_files[0], mask_path=masks[0],
-                base_out_img_path=base_ct, base_out_mask_path=base_mask,
+            out_mask = os.path.join(out_subj_dir, f"{subj}_PETCT_mask.nii.gz")
+            
+            # Traitement CT (Pad Air = -1000)
+            out_ct = os.path.join(out_subj_dir, f"{subj}_CT.nii.gz")
+            success_ct = make_isotropic_crop_pad(
+                image_path=ct_path, mask_path=mask_path,
+                out_img_path=out_ct, out_mask_path=out_mask,
                 target_spacing=target_spacing, target_shape=target_shape, pad_value=-1000.0
             )
             
-            base_pet = os.path.join(out_subj_dir, f"{subj}_PET.nii.gz")
-            n_lesions_pet = make_isotropic_crop_pad(
-                image_path=pet_files[0], mask_path=masks[0],
-                base_out_img_path=base_pet, base_out_mask_path=base_mask,
+            # Traitement PET (Pad Vide = 0)
+            out_pet = os.path.join(out_subj_dir, f"{subj}_PET.nii.gz")
+            success_pet = make_isotropic_crop_pad(
+                image_path=pet_path, mask_path=mask_path,
+                out_img_path=out_pet, out_mask_path=out_mask,
                 target_spacing=target_spacing, target_shape=target_shape, pad_value=0.0
             )
             
-            if n_lesions_ct > 0 and n_lesions_pet > 0: 
-                total_lesions += n_lesions_ct
+            if success_ct and success_pet: 
+                valid_count += 1
                 
-    print(f"\n[Terminé] {total_lesions} Tenseurs (Lésions) générés avec succès pour PyTorch.")
+    print(f"\n[Terminé] {valid_count} Tenseurs générés avec succès et prêts pour PyTorch !")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
