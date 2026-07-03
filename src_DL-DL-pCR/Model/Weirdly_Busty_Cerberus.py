@@ -66,9 +66,9 @@ class FocalLoss(nn.Module):
 # =============================================================================
 # 2. ARCHITECTURE DU MODÈLE
 # =============================================================================
-class Multimodal_pCR_Net(nn.Module):
+class Weirdly_Busty_Cerberus(nn.Module):
     def __init__(self, num_clinical_features, mri_hidden_dim=128, petct_hidden_dim=128, clin_hidden_dim=32):
-        super(Multimodal_pCR_Net, self).__init__()
+        super(Weirdly_Busty_Cerberus, self).__init__()
         
         # ---------------------------------------------------------
         # BRANCHE 1 : IRM (DCE Séquentiel)
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     NUM_CLINICAL_FEATURES = 15 # Dépend du nombre de colonnes du DataFrame encodé
     
     # Instanciation du modèle et de la loss
-    model = Multimodal_pCR_Net(num_clinical_features=NUM_CLINICAL_FEATURES)
+    model = Weirdly_Busty_Cerberus(num_clinical_features=NUM_CLINICAL_FEATURES)
     criterion = FocalLoss(alpha=0.25, gamma=2.0)
     
     # Simulation d'un batch provenant du Dataloader
