@@ -299,7 +299,7 @@ if __name__ == "__main__":
         is_training=False # Désactive MONAI (Test pur)
     )
     
-    # 4. DataLoaders (Prêts à nourrir ton modèle)
+    # 4. DataLoaders (Prêts à nourrir le modèle)
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
     
     # Test d'affichage
