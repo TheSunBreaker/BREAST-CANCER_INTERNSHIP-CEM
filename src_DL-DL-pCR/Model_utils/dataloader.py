@@ -161,7 +161,7 @@ class BreastMultimodalDataset(Dataset):
                     sigma_range=(5, 8), 
                     magnitude_range=(100, 200), 
                     prob=0.3,
-                    padding_mode="zeros"
+                    padding_mode="border" # On évite de mettre "zeros" pour éviter que pour CT, le modèle confonde remplissage et eau
                 ),
                 
                 # 4. Zoom aléatoire
@@ -184,15 +184,15 @@ class BreastMultimodalDataset(Dataset):
         # 1. CHARGEMENT IRM (3 Phases)
         # =========================================================
         data_mri = []
-            # L'IRM est DEJA normalisée globalement (MAMA-MIA), on charge juste les 3 phases
-            # Ordre attendu : Phase0, Phase1, Phase2
-          for i in range(3):
-              phase_path = os.path.join(subj_dir, f"{subj}_MRI_phase{i}.npy")
-              # On ajoute une dimension [1, Z, Y, X] pour permettre la concaténation
-              data_mri.append(np.expand_dims(np.load(phase_path), axis=0)) 
+        # L'IRM est DEJA normalisée globalement (MAMA-MIA), on charge juste les 3 phases
+        # Ordre attendu : Phase0, Phase1, Phase2
+        for i in range(3):
+            phase_path = os.path.join(subj_dir, f"{subj}_MRI_phase{i}.npy")
+            # On ajoute une dimension [1, Z, Y, X] pour permettre la concaténation
+            data_mri.append(np.expand_dims(np.load(phase_path), axis=0)) 
             
-            # Concaténation finale : [3, 96, 96, 96]
-            mri_array = np.concatenate(data_mri, axis=0) 
+        # Concaténation finale : [3, 96, 96, 96]
+        mri_array = np.concatenate(data_mri, axis=0) 
             
         # =========================================================
         # 2. CHARGEMENT PET/CT (Clipping & Scaling)
