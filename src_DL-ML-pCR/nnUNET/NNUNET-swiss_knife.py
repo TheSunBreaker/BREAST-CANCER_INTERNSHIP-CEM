@@ -165,6 +165,8 @@ CELA DEVIENT
 "
 DE PLUS, ON AJOUTE UN IMPORT POUR 'os' !
 
+AUSSI, DANS LA FONCTION DE PREDICTION DE CE CODE-CI, ON AJOUTE UNE CONDITION DE IF POUR AJOUTER EN COMMANDE NNUNET OU NON LES PARAMETRES POUR DEMANDER UN SEUL PROCESSUS EN POST ET PRETRAITEMENT QUI DEPEND DONC DE LA VARIABLE SYSTEME 'NNUNET_DISABLE_PARALLEL_VAL_EXPORT' QU'ON A CREEE
+
 """
 
 import os
@@ -506,6 +508,14 @@ def do_predict(dataset_id: str, config: str, fold: str, input_folder: str, outpu
         "-tr", trainer,
         "--save_probabilities"
     ]
+
+    disable_parallel = os.environ.get("NNUNET_DISABLE_PARALLEL_VAL_EXPORT", "0") == "1"
+
+    if disable_parallel :
+        cmd += [
+            "-npp", "1",   # preprocessing processes
+            "-nps", "1"    # segmentation export processes
+            ]
 
     run_command(cmd, env_dict)
 
