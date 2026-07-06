@@ -87,6 +87,84 @@ Cela a été nécessaire car sur gros volumes, sur le serveur utilisé, la faibl
 !!!!!!!!
 ATENTION
 !!!!!!!!
+
+ATTENTION, PAR DEFAUT, COMME LE VEUT LA CONVENTION NNUNET, ON UTILISE LE MODEL FINAL POUR VALIDATION ET PREDICTION ET NON LE MODELBEST
+POUR CHANGER CE COMPORTER, IL FAUT AJOUTER LE PARAMETRE -chk POUR CONTROLER LE MODEL A UTULISER.
+PAR AILLEURS, LE MEME PROBLEME DE MEMOIRE PARTAGEE S'ETANT POSE EN VALIDATION SE REPOSANT ENCORE EN PREDICTION, IL EST NECESSAIRE DE
+FAIRE QUELQUE CHOSE, ALORS ON VA MODIFIER EGALEMENT LE CODE SOURCE QUI S'OCCUPE DE LA PREDICTION, ET LE FAIRE DEPENDRE LUI AUSSI DE LA MÊME VARIABLE SYSTEME QU'ON A MISE AU POINT POUR LA VALIDATION. ON VA DONC CETTE FOIS MODIFIER LA FONCTION 'preprocess_fromfiles_save_to_queue' DE "nnunetv2/inference/data_iterators.py", AUX ENVIRONS DE LA LIGNE 40. 
+ON AVAIT 
+
+"
+            data = torch.from_numpy(data).to(dtype=torch.float32, memory_format=torch.contiguous_format)
+
+            item = {'data': data, 'data_properties': data_properties,
+                    'ofile': output_filenames_truncated[idx] if output_filenames_truncated is not None else None}
+            success = False
+            while not success:
+                try:
+                    if abort_event.is_set():
+                        return
+                    target_queue.put(item, timeout=0.01)
+                    success = True
+                except queue.Full:
+                    pass
+        done_event.set()
+    except Exception as e:
+        # print(Exception, e)
+        abort_event.set()
+        raise e
+"
+
+CELA DEVIENT
+
+"
+
+            # data = torch.from_numpy(data).to(dtype=torch.float32, memory_format=torch.contiguous_format)
+            disable_parallel = os.environ.get("NNUNET_DISABLE_PARALLEL_VAL_EXPORT", "0") == "1"
+            
+            if disable_parallel:
+                data = torch.from_numpy(np.ascontiguousarray(data)).float().clone()
+            else:
+                data = torch.from_numpy(data).to(dtype=torch.float32, memory_format=torch.contiguous_format)
+
+            item = {'data': data, 'data_properties': data_properties,
+                    'ofile': output_filenames_truncated[idx] if output_filenames_truncated is not None else None}
+            success = False
+            
+            #while not success:
+            #    try:
+            #        if abort_event.is_set():
+            #            return
+            #        target_queue.put(item, timeout=0.01)
+            #        success = True
+            #    except queue.Full:
+            #        pass
+
+            while not success:
+                try:
+                    if abort_event.is_set():
+                        return
+            
+                    if disable_parallel:
+                        target_queue.put(item)  # SAFE MODE (no shm pressure)
+                    else:
+                        target_queue.put(item, timeout=0.01)
+            
+                    success = True
+            
+                except queue.Full:
+                    if disable_parallel:
+                        # en mode safe, on ne retry pas agressivement
+                        time.sleep(0.01)
+        
+        done_event.set()
+    except Exception as e:
+        # print(Exception, e)
+        abort_event.set()
+        raise e
+"
+DE PLUS, ON AJOUTE UN IMPORT POUR 'os' !
+
 """
 
 import os
