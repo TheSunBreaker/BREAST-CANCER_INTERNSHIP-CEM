@@ -507,7 +507,7 @@ def main():
     parser.add_argument("-p", "--predictions", type=str, 
                         help="[EVALUATE] Dossier contenant les prédictions du modèle")
 
-    # Pour de la validation exclusivement (cas par exemple d'un crash au moment de la val
+    # Pour de la validation exclusivement (cas par exemple d'un crash au moment de la val)
     parser.add_argument("--val", action="store_true",
                     help="[TRAIN] Exécute uniquement la validation finale (si l'entraînement est déjà fini)")
 
