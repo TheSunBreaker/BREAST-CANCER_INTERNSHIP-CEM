@@ -509,7 +509,7 @@ def do_predict(dataset_id: str, config: str, fold: str, input_folder: str, outpu
         "--save_probabilities"
     ]
 
-    disable_parallel = os.environ.get("NNUNET_DISABLE_PARALLEL_VAL_EXPORT", "0") == "1"
+    disable_parallel = env_dict.get("NNUNET_DISABLE_PARALLEL_VAL_EXPORT", "0") == "1"
 
     if disable_parallel :
         cmd += [
