@@ -64,10 +64,67 @@ class FocalLoss(nn.Module):
         return loss
 
 # =============================================================================
+# FONCTION CHIRURGICALE DE CHARGEMENT DES POIDS (TRANSFER LEARNING POUR FINE TUNING)
+# =============================================================================
+def load_medical_pretrained_weights(model, weights_path, is_multichannel=False):
+    """
+    Charge les poids pré-entraînés (ex: MedicalNet) dans un backbone MONAI.
+    Gère intelligemment le problème du canal d'entrée pour le PET/CT.
+    """
+    if not os.path.exists(weights_path):
+        print(f"   [AVERTISSEMENT] Fichier de poids {weights_path} introuvable. Initialisation aléatoire.")
+        return model
+
+    print(f"   [INFO] Chargement des poids pré-entraînés depuis : {weights_path}")
+    
+    # 1. On charge le dictionnaire de poids (sur CPU pour ne pas saturer la VRAM)
+    pretrained_dict = torch.load(weights_path, map_location="cpu")
+    
+    # 2. On récupère le dictionnaire de notre modèle vierge
+    model_dict = model.state_dict()
+
+    # 3. Filtrage : On ne garde que les poids qui existent dans notre modèle 
+    # ET dont la taille correspond (cela exclut automatiquement la dernière couche de classification)
+    filtered_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
+    
+    # -----------------------------------------------------------------
+    # L'ASTUCE DU PET/CT (2 Canaux au lieu d'un)
+    # -----------------------------------------------------------------
+    if is_multichannel:
+        # On cherche le nom de la toute première couche de convolution (souvent 'conv1.weight' ou 'features.conv0.weight')
+        # Dans DenseNet MONAI, c'est généralement 'features.conv0.weight'
+        first_conv_name = [k for k in pretrained_dict.keys() if 'conv' in k and 'weight' in k][0]
+        
+        pretrained_first_conv = pretrained_dict[first_conv_name] # Shape: (Out_channels, 1, Z, Y, X)
+        model_first_conv = model_dict[first_conv_name]           # Shape: (Out_channels, 2, Z, Y, X)
+        
+        # Si la taille diverge sur l'axe des canaux d'entrée (axe 1)
+        if pretrained_first_conv.shape[1] == 1 and model_first_conv.shape[1] == 2:
+            print(f"   [MAGIE] Duplication des poids de la première couche pour supporter les 2 canaux (PET et CT).")
+            # On copie le canal 1 vers le canal 2 !
+            new_first_conv = torch.cat([pretrained_first_conv, pretrained_first_conv], dim=1)
+            
+            # On divise par 2 pour garder la même amplitude de signal (Très important mathématiquement)
+            new_first_conv = new_first_conv / 2.0
+            
+            # On ajoute cette couche modifiée au dictionnaire filtré
+            filtered_dict[first_conv_name] = new_first_conv
+
+    # 4. On injecte les poids filtrés dans notre modèle
+    # strict=False permet d'ignorer les couches manquantes sans planter
+    model.load_state_dict(filtered_dict, strict=False)
+    print("   [SUCCÈS] Transfer Learning appliqué avec succès.")
+    
+    return model
+
+# =============================================================================
 # 2. ARCHITECTURE DU MODÈLE
 # =============================================================================
 class Weirdly_Busty_Cerberus(nn.Module):
-    def __init__(self, num_clinical_features, mri_hidden_dim=128, petct_hidden_dim=128, clin_hidden_dim=32):
+    def __init__(self, num_clinical_features, mri_hidden_dim=128, petct_hidden_dim=128, clin_hidden_dim=32, 
+                 pretrained_mri_path="./weights/resnet_10_23dataset.pth", # Chemin poids défaut MedicalNet à modifier
+                 pretrained_petct_path="./weights/densenet_121_medical.pth" # Idem ||
+                ):
         super(Weirdly_Busty_Cerberus, self).__init__()
         
         # ---------------------------------------------------------
@@ -77,6 +134,9 @@ class Weirdly_Busty_Cerberus(nn.Module):
         # On utilise un ResNet10 3D léger (pour éviter l'explosion de la VRAM).
         # in_channels=1 car on passe chaque phase séquentiellement.
         self.mri_backbone = resnet10(spatial_dims=3, n_input_channels=1, num_classes=mri_hidden_dim)
+
+        # ===> TRANSFER LEARNING <===
+        self.mri_backbone = load_medical_pretrained_weights(self.mri_backbone, pretrained_mri_path, is_multichannel=False)
         
         # Le LSTM prendra les features du ResNet pour chaque phase (T=3)
         # batch_first=True signifie que nos tenseurs seront de taille (Batch, Seq_len, Features)
@@ -96,6 +156,9 @@ class Weirdly_Busty_Cerberus(nn.Module):
         # fusionner les caractéristiques à plusieurs échelles.
         # On coupe la tête de classification classique pour extraire les features.
         self.petct_backbone = DenseNet121(spatial_dims=3, in_channels=2, out_channels=petct_hidden_dim)
+
+        # ===> TRANSFER LEARNING (AVEC ASTUCE MULTICANAL) <===
+        self.petct_backbone = load_medical_pretrained_weights(self.petct_backbone, pretrained_petct_path, is_multichannel=True)
         
         # ---------------------------------------------------------
         # BRANCHE 3 : CLINIQUE
