@@ -71,6 +71,25 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler=None):
         return 0, 0.0
 
 # =============================================================================
+# GELEUR-DEGELEUR ENCODEURS
+# =============================================================================
+def freeze_pretrained_encoders(model):
+    """Gèle les poids des backbones pré-entraînés pour protéger leurs filtres."""
+    for param in model.mri_backbone.parameters():
+        param.requires_grad = False
+    for param in model.petct_backbone.parameters():
+        param.requires_grad = False
+    print(" ❄️ [WARM-UP] Encodeurs (IRM & PET-CT) GELÉS. Seules les têtes apprennent.")
+
+def unfreeze_pretrained_encoders(model):
+    """Dégèle les poids pour le fine-tuning final."""
+    for param in model.mri_backbone.parameters():
+        param.requires_grad = True
+    for param in model.petct_backbone.parameters():
+        param.requires_grad = True
+    print(" 🔥 [FINE-TUNING] Encodeurs DÉGELÉS. Entraînement de bout en bout activé.")
+
+# =============================================================================
 # BOUCLE PRINCIPALE D'ENTRAÎNEMENT
 # =============================================================================
 def train_cerberus(
@@ -81,6 +100,35 @@ def train_cerberus(
     checkpoint_dir="./checkpoints",
     resume_checkpoint=None
 ):
+
+    # =============================================================================
+    #    PREPARATION NECESSAIRES POUR SCHEDULER ET OPTIMISEUR
+    # =============================================================================
+
+    # 1. Hyperparamètres
+    EPOCHS = 50
+    UNFREEZE_EPOCH = 5 # On dégèle à l'époque 5
+    
+    # 2. Groupes de paramètres (Differential Learning Rates)
+    # On sépare les encodeurs (qui ont besoin d'un tout petit LR) des têtes toutes neuves (qui ont besoin d'un gros LR)
+    encoder_params = list(model.mri_backbone.parameters()) + list(model.petct_backbone.parameters())
+    head_params = list(model.mri_lstm.parameters()) + list(model.clinical_mlp.parameters()) + list(model.fusion_classifier.parameters())
+    
+    # L'optimiseur AdamW avec deux taux d'apprentissage différents !
+    optimizer = optim.AdamW([
+        {'params': encoder_params, 'lr': 1e-5}, # Très petit LR pour ne pas casser MedicalNet
+        {'params': head_params, 'lr': 1e-3}     # LR standard pour les nouvelles couches
+    ], weight_decay=1e-4)
+
+    # 3. Scheduler existant (CosineAnnealingLR)
+    scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
+
+    # 4. On gèle avant de démarrer
+    freeze_pretrained_encoders(model)
+
+    # =============================================================================
+    #    TRAIN
+    # =============================================================================
     
     model = model.to(device)
     
@@ -101,6 +149,11 @@ def train_cerberus(
         # ---------------------------------------------------------------------
         # PHASE D'ENTRAÎNEMENT
         # ---------------------------------------------------------------------
+
+        # Le DÉGEL DYNAMIQUE
+        if epoch == UNFREEZE_EPOCH:
+            unfreeze_pretrained_encoders(model)
+       
         model.train() # Active le Dropout et le BatchNorm en mode train
         train_loss = 0.0
         optimizer.zero_grad() # On remet les gradients à zéro au début de l'époque
@@ -138,6 +191,9 @@ def train_cerberus(
             
             # Affichage en temps réel
             train_pbar.set_postfix({"Loss": f"{(train_loss / (step + 1)):.4f}"})
+
+            # Le scheduler met à jour le LR
+            scheduler.step()
             
         avg_train_loss = train_loss / len(train_loader)
 
