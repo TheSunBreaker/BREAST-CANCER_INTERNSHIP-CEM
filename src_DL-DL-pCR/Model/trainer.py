@@ -25,10 +25,103 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.metrics import roc_auc_score, accuracy_score
 import numpy as np
 from tqdm import tqdm
+import time
+import matplotlib.pyplot as plt
+import matplotlib
+# Force matplotlib à ne pas chercher d'interface graphique (évite les plantages sur serveur distant)
+matplotlib.use('Agg') 
 
 # TODO : Imports
-# from dataset_loader import BreastMultimodalDataset, DataLoader
-# from model_architecture import Weirdly_Busty_Cerberus, FocalLoss
+from dataloader import BreastMultimodalDataset, DataLoader
+from Weirdly_Busty_Cerberus import Weirdly_Busty_Cerberus, FocalLoss
+
+
+# =============================================================================
+# OUTIL POUR MONITORING
+# =============================================================================
+class TrainingMonitor:
+    """
+    Observatoire du Cerbère.
+    Traque les métriques, écrit un fichier de log et dessine les courbes en temps réel.
+    """
+    def __init__(self, out_dir):
+        self.out_dir = out_dir
+        os.makedirs(self.out_dir, exist_ok=True)
+        
+        self.log_file = os.path.join(self.out_dir, "training_log.txt")
+        self.plot_file = os.path.join(self.out_dir, "training_curves.png")
+        
+        # Initialisation du fichier de log
+        with open(self.log_file, "w") as f:
+            f.write("=== LOG D'ENTRAÎNEMENT : WEIRDLY BUSTY CERBERUS ===\n")
+            f.write("Epoch\tTime(s)\tLR\tTrainLoss\tValLoss\tValAUC\tValAcc\n")
+            
+        # Historiques pour les graphiques
+        self.history = {
+            "epoch": [],
+            "train_loss": [],
+            "val_loss": [],
+            "val_auc": [],
+            "val_acc": [],
+            "lr": []
+        }
+
+    def update(self, epoch, epoch_time, lr, train_loss, val_loss, val_auc, val_acc):
+        """Met à jour les historiques et écrit dans le log textuel."""
+        # Mise à jour des listes
+        self.history["epoch"].append(epoch)
+        self.history["train_loss"].append(train_loss)
+        self.history["val_loss"].append(val_loss)
+        self.history["val_auc"].append(val_auc)
+        self.history["val_acc"].append(val_acc)
+        self.history["lr"].append(lr)
+        
+        # Écriture dans le fichier
+        with open(self.log_file, "a") as f:
+            f.write(f"{epoch}\t{epoch_time:.1f}\t{lr:.6f}\t{train_loss:.4f}\t{val_loss:.4f}\t{val_auc:.4f}\t{val_acc:.4f}\n")
+            
+    def draw_plots(self):
+        """Génère un tableau de bord PNG de l'entraînement."""
+        # Création d'une figure avec 3 sous-graphiques horizontaux
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        fig.suptitle('Tableau de Bord : Weirdly Busty Cerberus', fontsize=16, fontweight='bold')
+        
+        epochs = self.history["epoch"]
+        
+        # Graphique 1 : Les Pertes (Loss)
+        axes[0].plot(epochs, self.history["train_loss"], label='Train Loss', color='blue', linewidth=2)
+        axes[0].plot(epochs, self.history["val_loss"], label='Val Loss', color='red', linewidth=2, linestyle='--')
+        axes[0].set_title("Évolution de la Focal Loss")
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("Loss")
+        axes[0].legend()
+        axes[0].grid(True, linestyle=':', alpha=0.6)
+        
+        # Graphique 2 : Les Performances (AUC & Accuracy)
+        axes[1].plot(epochs, self.history["val_auc"], label='Val AUC', color='purple', linewidth=2)
+        axes[1].plot(epochs, self.history["val_acc"], label='Val Accuracy', color='green', linewidth=2, linestyle='-.')
+        axes[1].set_title("Métriques de Performance")
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Score (0 à 1)")
+        axes[1].set_ylim([0.0, 1.05])
+        axes[1].legend()
+        axes[1].grid(True, linestyle=':', alpha=0.6)
+        
+        # Graphique 3 : Le Taux d'apprentissage (Learning Rate)
+        axes[2].plot(epochs, self.history["lr"], label='Learning Rate', color='orange', linewidth=2)
+        axes[2].set_title("Scheduler (Cosine Annealing)")
+        axes[2].set_xlabel("Epoch")
+        axes[2].set_ylabel("LR")
+        # Échelle logarithmique car le LR varie souvent de 1e-3 à 1e-6
+        axes[2].set_yscale('log') 
+        axes[2].legend()
+        axes[2].grid(True, linestyle=':', alpha=0.6)
+        
+        plt.tight_layout()
+        
+        # Sauvegarde et libération de la mémoire RAM
+        plt.savefig(self.plot_file, dpi=150)
+        plt.close(fig)
 
 # =============================================================================
 # FONCTIONS DE SAUVEGARDE ET DE REPRISE
@@ -139,6 +232,9 @@ def train_cerberus(
     if resume_checkpoint:
         start_epoch, best_val_auc = load_checkpoint(resume_checkpoint, model, optimizer, scheduler)
 
+    # Initialisation du Moniteur
+    monitor = TrainingMonitor(out_dir=checkpoint_dir)
+
     print("\n" + "="*50)
     print(f"RÉVEIL DU CERBÈRE : Lancement de l'entraînement")
     print(f"Device : {device} | Accumulation : {accumulation_steps} steps")
@@ -149,6 +245,9 @@ def train_cerberus(
         # ---------------------------------------------------------------------
         # PHASE D'ENTRAÎNEMENT
         # ---------------------------------------------------------------------
+
+        # Chronomètre de l'époque
+        epoch_start_time = time.time()
 
         # Le DÉGEL DYNAMIQUE
         if epoch == UNFREEZE_EPOCH:
@@ -241,8 +340,26 @@ def train_cerberus(
         # Conversion des probabilités en prédictions binaires (seuil à 0.5 par défaut)
         preds = (np.array(all_probs) >= 0.5).astype(int)
         val_acc = accuracy_score(all_targets, preds)
+
+        # Fin du Chronomètre
+        epoch_duration = time.time() - epoch_start_time
         
-        print(f" => Bilan Epoch {epoch+1} : Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val AUC: {val_auc:.4f} | Val Acc: {val_acc:.4f}")
+        # Récupération du Learning Rate actuel (Tête)
+        current_lr = optimizer.param_groups[-1]['lr']
+        
+        print(f" => Bilan Epoch {epoch+1}, terminée en {epoch_duration:.0f}s : Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val AUC: {val_auc:.4f} | Val Acc: {val_acc:.4f}")
+
+        # Mise à jour du Moniteur et Dessin du PNG
+        monitor.update(
+            epoch=epoch+1, 
+            epoch_time=epoch_duration, 
+            lr=current_lr, 
+            train_loss=avg_train_loss, 
+            val_loss=avg_val_loss, 
+            val_auc=val_auc, 
+            val_acc=val_acc
+        )
+        monitor.draw_plots()
 
         # ---------------------------------------------------------------------
         # SAUVEGARDE ET SCHEDULER
