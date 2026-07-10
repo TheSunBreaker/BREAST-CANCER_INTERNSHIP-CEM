@@ -8,7 +8,7 @@ Description   : Outil de contrôle qualité (QC) pour l'analyse des masques de s
                 et extrait des métriques oncologiques clés (volume, diamètre max de Feret).
 
 Utilisation :
-    python check_segmentations.py -i /chemin/vers/masques -o /chemin/vers/rapport.txt
+    python predictions_Inspector.py -i /chemin/vers/masques -o /chemin/vers/rapport.txt
 """
 
 import os
