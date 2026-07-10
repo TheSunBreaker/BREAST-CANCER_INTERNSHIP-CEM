@@ -92,15 +92,6 @@ ATTENTION, PAR DEFAUT, COMME LE VEUT LA CONVENTION NNUNET, ON UTILISE LE MODEL F
 POUR CHANGER CE COMPORTER, IL FAUT AJOUTER LE PARAMETRE -chk POUR CONTROLER LE MODEL A UTULISER.
 PAR AILLEURS, LE MEME PROBLEME DE MEMOIRE PARTAGEE S'ETANT POSE EN VALIDATION SE REPOSANT ENCORE EN PREDICTION, IL EST NECESSAIRE DE
 FAIRE QUELQUE CHOSE, ALORS ON VA AJOUTER, EN PLUS DES ELEMENTS DE NOTRE COMMANDE DE PREDICTION, LES PARAMETRES NPP ET NPS AVEC VALEURS 0 SI ET SEULEMENT SI LA VAR D'ENVIRONNEMENT NNUNET_DISABLE_PARALLEL_VAL_EXPORT QU'ON A CREEE EST A 1. CAR EN CONSULTANT LE CODE NNUNET DE CETTE PARTIE, ON VOIT QUE QUAND CES DEUX ELEMENTS SONT A 0, CELA DESACTIVE LE MULTIPROCESSING POUR LA PRED. ALORS VOILA.
-
-
-Pour exporter un modèle nnUNet après entraînenement, utiliser la commande native nnUNet 'nnUNetv2_export_model_to_zip' avec les paramètres
-'nnUNetv2_export_model_to_zip \
-    -d DATASET_ID \
-    -o mon_modele.zip \
-    -chk checkpoint_final.pth checkpoint_best.pth'
-
-'nnUNetv2_export_model_to_zip -h' pour avoir plus de détails.
 """
 
 import os
@@ -475,6 +466,30 @@ def do_evaluate(ground_truth_folder: str, prediction_folder: str, env_dict: dict
     ]
     run_command(cmd, env_dict)
 
+def do_export(dataset_id: str,
+              output_zip: str,
+              trainer: str,
+              config: str,
+              env_dict: dict):
+    """
+    Exporte un modèle nnUNet sous forme d'archive zip.
+    """
+
+    print(f"--- EXPORT DU MODÈLE (Dataset {dataset_id}) ---")
+
+    cmd = [
+        "nnUNetv2_export_model_to_zip",
+        "-d", dataset_id,
+        "-o", output_zip,
+        "-tr", trainer,
+        "-c", config,
+        "-chk",
+        "checkpoint_final.pth",
+        "checkpoint_best.pth"
+    ]
+
+    run_command(cmd, env_dict)
+
 # ---------------------------------------------------------
 # PARSER ARGUMENTS TERMINAL
 # ---------------------------------------------------------
@@ -482,7 +497,7 @@ def do_evaluate(ground_truth_folder: str, prediction_folder: str, env_dict: dict
 def main():
     parser = argparse.ArgumentParser(description="Couteau Suisse pour orchestrer nnU-Net V2 proprement sur HPC/Colab")
     
-    parser.add_argument("action", choices=["preprocess", "train", "predict", "evaluate"], 
+    parser.add_argument("action", choices=["preprocess", "train", "predict", "evaluate", "export"], 
                         help="L'action principale à exécuter")
     
     parser.add_argument("-d", "--dataset", type=str, required=True, 
@@ -520,6 +535,13 @@ def main():
     parser.add_argument("--val", action="store_true",
                     help="[TRAIN] Exécute uniquement la validation finale (si l'entraînement est déjà fini)")
 
+    # Pour exporter un modèle
+    parser.add_argument(
+        "--zip",
+        type=str,
+        help="[EXPORT] Nom du fichier zip à créer."
+    )
+
     args = parser.parse_args()
     
     # Configuration sécurisée de l'environnement (HPC)
@@ -541,6 +563,19 @@ def main():
             if not args.ground_truth or not args.predictions:
                 parser.error("L'action 'evaluate' requiert -g (--ground_truth) et -p (--predictions).")
             do_evaluate(args.ground_truth, args.predictions, env_dict)
+
+        elif args.action == "export":
+            if not args.zip:
+                parser.error(
+                    "L'action 'export' nécessite --zip."
+                )
+            do_export(
+                args.dataset,
+                args.zip,
+                args.trainer,
+                args.config,
+                env_dict
+            )
             
     except KeyboardInterrupt:
         print("\n[INFO] Fermeture de l'orchestrateur suite à Ctrl+C.")
