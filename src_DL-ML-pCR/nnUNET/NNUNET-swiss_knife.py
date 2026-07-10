@@ -95,12 +95,12 @@ FAIRE QUELQUE CHOSE, ALORS ON VA AJOUTER, EN PLUS DES ELEMENTS DE NOTRE COMMANDE
 
 
 Pour exporter un modèle nnUNet après entraînenement, utiliser la commande native nnUNet 'nnUNetv2_export_model_to_zip' avec les paramètres
-nnUNetv2_export_model_to_zip \
+'nnUNetv2_export_model_to_zip \
     -d DATASET_ID \
     -o mon_modele.zip \
-    -chk checkpoint_final.pth checkpoint_best.pth checkpoint_latest.pth
+    -chk checkpoint_final.pth checkpoint_best.pth'
 
-'nnUNetv2_export_model_to_zip -h' pour avoir plus de détails
+'nnUNetv2_export_model_to_zip -h' pour avoir plus de détails.
 """
 
 import os
