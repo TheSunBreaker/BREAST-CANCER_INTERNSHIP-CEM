@@ -2,7 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-Nom du Script : check_segmentations.py
+===============================================================================
+  Évaluateur de Métriques de Segmentation & Multifocalité (V2 - Strict NII.GZ)
+===============================================================================
+Rôle :
+  Analyse les masques de segmentation 3D, filtre les artefacts millimétriques,
+  et calcule le volume et le diamètre réel de Feret en s'assurant d'ignorer
+  les fichiers doublons (.nrrd, .seg).
+===============================================================================
+
 Description   : Outil de contrôle qualité (QC) pour l'analyse des masques de segmentation 3D.
                 Détecte la multifocalité (plusieurs tumeurs), les cas à 0 tumeur,
                 et extrait des métriques oncologiques clés (volume, diamètre max de Feret).
@@ -19,17 +27,22 @@ import SimpleITK as sitk
 import numpy as np
 
 
-def analyze_segmentation(file_path):
+def analyze_segmentation(file_path, min_vol_cm3=0.005):
     """
-    Analyse un fichier de segmentation 3D avec SimpleITK.
-    Identifie le nombre de tumeurs isolées et extrait des métriques cliniques.
+    Analyse un masque de segmentation 3D à l'aide de SimpleITK.
+    Identifie les régions tumorales isolées (composantes connexes), élimine le bruit 
+    de fond (artefacts millimétriques) et extrait des métriques cliniques (volume, Feret).
     
     Parameters:
-        file_path (str): Chemin vers le fichier image (NIfTI, mhd, etc.)
+        file_path (str): Chemin absolu ou relatif vers le fichier de segmentation (.nii.gz).
+        min_vol_cm3 (float): Seuil de volume minimal en cm³ en dessous duquel une lésion 
+                             est considérée comme du bruit (Défaut: 0.005 cm³).
         
     Returns:
-        dict: Statistiques de l'analyse du cas.
+        dict: Dictionnaire contenant le statut du cas, le nombre de tumeurs réelles,
+              la charge tumorale totale et le détail géométrique de chaque foyer.
     """
+    # Initialisation du dictionnaire de résultats pour ce fichier
     results = {
         "filename": os.path.basename(file_path),
         "status": "OK",
@@ -39,56 +52,73 @@ def analyze_segmentation(file_path):
     }
     
     try:
-        # 1. Chargement de l'image de segmentation
-        reader = sitk.ImageFileReader()
-        reader.SetFileName(file_path)
-        seg_img = reader.Execute()
+        # 1. Chargement de l'image via SimpleITK
+        seg_img = sitk.ReadImage(file_path)
         
-        # S'assurer que le masque est binaire (0 = fond, 1 ou + = tumeur)
-        # Idéal pour nnU-Net qui peut sortir des labels multiclasses ou un seul label binaire
+        # Binarisation stricte : tout voxel > 0 devient 1 (tumeur), le reste devient 0 (fond).
+        # Cast en UInt8 (entier 8 bits) requis pour les filtres de composantes connexes.
         binary_seg = sitk.Cast(seg_img > 0, sitk.sitkUInt8)
         
-        # 2. Analyse des composantes connexes (Connected Components)
-        # Regroupe les voxels connectés en "objets" (tumeurs distinctes)
-        # Par défaut, utilise la connectivité complète (26-connectivité en 3D)
+        # 2. Extraction des Composantes Connexes (Connected Components)
+        # Ce filtre analyse la topologie 3D et attribue un identifiant unique (1, 2, 3...) 
+        # à chaque groupe de voxels qui se touchent (26-connectivité par défaut en 3D).
         connected_components = sitk.ConnectedComponent(binary_seg)
         
-        # 3. Extraction des caractéristiques de forme et de géométrie
+        # 3. Initialisation de l'analyseur de forme géométrique
         shape_stats = sitk.LabelShapeStatisticsImageFilter()
+        
+        # CRITIQUE : Force SimpleITK à calculer la coque convexe ("Convex Hull") des formes.
+        # Sans cette activation explicite, GetFeretDiameter() renvoie structurellement 0.0.
+        shape_stats.SetComputeFeretDiameter(True)
+        
+        # Exécution du calcul des statistiques sur notre image labellisée
         shape_stats.Execute(connected_components)
         
-        # Obtenir la liste des labels (chaque label correspond à une tumeur distincte)
+        # Récupération de la liste de tous les labels générés (ex: [1, 2, 3, ..., 29])
         labels = shape_stats.GetLabels()
-        num_tumors = len(labels)
-        results["num_tumors"] = num_tumors
         
-        if num_tumors == 0:
-            results["status"] = "WARNING_ZERO_TUMOR"
-            return results
-        elif num_tumors > 1:
-            results["status"] = "WARNING_MULTIFOCAL"
-            
-        # 4. Extraction des métriques pour chaque lésion détectée
+        valid_tumor_idx = 1
         total_volume_mm3 = 0.0
         
-        for idx, label in enumerate(labels, start=1):
-            # Volume en mm3 = nombre de voxels * produit du spacing (taille des voxels)
+        # 4. Boucle d'analyse et de filtrage de chaque objet détecté
+        for label in labels:
+            # Récupération du volume physique de la composante (basé sur le spacing des voxels)
             volume_mm3 = shape_stats.GetPhysicalSize(label)
-            volume_cm3 = volume_mm3 / 1000.0  # Plus parlant pour un oncologue
-            total_volume_mm3 += volume_mm3
+            volume_cm3 = volume_mm3 / 1000.0  # Conversion en cm³ (unité standard en oncologie)
             
-            # Diamètre maximal de Feret (plus grande distance entre deux points de la lésion)
+            # --- FILTRE ANTI-BRUIT CLINIQUE ---
+            # Si le volume de la lésion est inférieur au seuil, on l'exclut du rapport.
+            # Cela évite de lever de fausses alertes pour des voxels isolés (artefacts de prédiction).
+            if volume_cm3 < min_vol_cm3:
+                continue
+            
+            # Récupération du diamètre maximal de Feret (plus grande distance Euclidienne entre 2 points)
             feret_diam = shape_stats.GetFeretDiameter(label)
             
+            # Accumulation du volume pour la charge tumorale totale du patient
+            total_volume_mm3 += volume_mm3
+            
+            # Ajout des détails de cette lésion valide
             results["tumors_details"].append({
-                "id": idx,
+                "id": valid_tumor_idx,
                 "volume_cm3": volume_cm3,
                 "feret_diameter_mm": feret_diam
             })
+            valid_tumor_idx += 1  # Incrémentation de l'index des lésions valides
             
+        # 5. Synthèse des résultats pour le fichier en cours
+        num_tumors = len(results["tumors_details"])
+        results["num_tumors"] = num_tumors
         results["total_volume_cm3"] = total_volume_mm3 / 1000.0
         
+        # Détermination du statut de sécurité (Warning)
+        if num_tumors == 0:
+            results["status"] = "WARNING_ZERO_TUMOR"
+        elif num_tumors > 1:
+            results["status"] = "WARNING_MULTIFOCAL"
+            
     except Exception as e:
+        # En cas de fichier corrompu ou d'erreur SimpleITK imprévue
         results["status"] = "ERROR_READING"
         results["error_msg"] = str(e)
         
@@ -104,6 +134,7 @@ def main():
                         help="Dossier contenant les fichiers de segmentation (ex: .nii.gz)")
     parser.add_argument("-o", "--output_file", required=False, type=str, default="qc_report.txt",
                         help="Nom/Chemin du fichier texte de rapport généré (Défaut: qc_report.txt)")
+    parser.add_argument("--min_vol", type=float, default=0.005, help="Volume seuil minimal en cm3 pour éliminer le bruit.")
     
     args = parser.parse_args()
     
@@ -112,7 +143,7 @@ def main():
         sys.exit(1)
         
     # Liste des extensions courantes en imagerie médicale
-    valid_extensions = ('.nii.gz', '.nii', '.mhd', '.nrrd')
+    valid_extensions = ('.nii.gz')
     files_to_process = [os.path.join(args.input_dir, f) for f in os.listdir(args.input_dir) if f.endswith(valid_extensions)]
     
     if not files_to_process:
@@ -133,7 +164,7 @@ def main():
     
     # Boucle de traitement
     for file_path in sorted(files_to_process):
-        res = analyze_segmentation(file_path)
+        res = analyze_segmentation(file_path, min_vol_cm3=args.min_vol)
         all_reports.append(res)
         
         # Mise à jour du résumé global
