@@ -113,3 +113,97 @@ Ces données sont issues du challenge MAMA-MIA. Le téléchargement automatisé 
 1. **Création de compte :** Inscrivez-vous sur la plateforme [Synapse](https://www.synapse.org/).
 2. **Authentification :** Générez un *Personal Access Token* (Token d'accès) depuis les paramètres de votre compte Synapse.
 3. **Exécution du script :** Rendez-vous dans le répertoire [`src_DL-ML-pCR/dataBringer/`](./src_DL-ML-pCR/dataBringer). Ce dossier contient les scripts (utilisant la librairie `synapseclient`) conçus pour se connecter via votre Token et télécharger automatiquement l'ensemble des données du challenge vers votre espace de travail.
+
+## 🛠️ Prétraitement et Ingestion des Données
+
+Le pipeline de prétraitement est divisé en plusieurs étapes majeures, dont le code majoritairement localisé dans le répertoire [`src_DL-ML-pCR/pre_works/`](./src_DL-ML-pCR/pre_works). Il permet de passer de dossiers DICOM bruts et désorganisés à une base de données NIfTI propre, triée longitudinalement et prête pour l'extraction radiomique ou l'entraînement **nnU-Net**.
+
+---
+
+## 1. Niveau 0 : Anonymisation stricte (`uncle_anonymiser.py`)
+
+Ce script garantit la confidentialité des données cliniques avant toute manipulation complexe. Il remplace les identifiants patients (**IPP**) par des identifiants locaux de recherche tout en préservant les métadonnées indispensables (poids, sexe, temps d'acquisition, géométrie, etc.).
+
+### Entrées requises
+
+* `data_hopital_brut/` : dossier contenant les DICOM originaux.
+* `data_clinique.csv` : fichier de correspondance contenant au minimum les colonnes :
+
+  * `IPP`
+  * `ID_PAT_LOCAL`
+
+> **Format attendu :** séparateur `;`.
+
+### Sortie générée
+
+* `data_hopital_safe/` : miroir du dossier d'entrée, entièrement anonymisé.
+
+### Exécution
+
+```bash
+python src_DL-ML-pCR/pre_works/uncle_anonymiser.py
+```
+
+---
+
+## 2. Niveau 1 : Ingesteur et convertisseur NIfTI (`DICOM_ingester_but_even_meaner.py`)
+
+Il s'agit du cœur du pipeline de prétraitement.
+
+Ce script (version **V6**) parcourt la *Safe Zone*, regroupe les séries par examen (`StudyInstanceUID`), filtre automatiquement les reconstructions inutiles, ordonne chronologiquement les séquences **DCE-MRI**, puis convertit les données **DICOM** en **NIfTI**.
+
+Il assure également l'association parfaite entre les masques de segmentation (dessinés par les radiologues) et leurs images sources.
+
+### ⚠️ Dépendances externes critiques
+
+> Ce script s'appuie sur deux outils externes qui doivent être téléchargés puis installés localement. Les chemins vers leurs exécutables doivent être renseignés dans l'en-tête du script Python.
+
+* **Plastimatch** *(conversion robuste des examens PET/CT)*.
+* **dcm2niix** *(conversion des IRM, gestion des séries 4D et export NIfTI)*.
+
+### Fonctionnalités principales
+
+* ✅ **Tri temporel automatique**
+
+  * Distinction entre les examens **Baseline** et les visites de **Follow-up**.
+
+* ✅ **Découpage automatique des IRM 4D**
+
+  * Séparation des volumes 4D en phases 3D indépendantes, indispensable pour la compatibilité avec **nnU-Net**.
+
+* ✅ **Audit des examens PET**
+
+  * Vérification de la présence des métadonnées nécessaires au calcul futur des **SUV** (dose injectée, poids, demi-vie du radiotraceur, etc.).
+
+* ✅ **Filtrage des reconstructions**
+
+  * Suppression automatique des séries dérivées (MIP, Subtraction, Scout, etc.).
+
+### Entrée attendue
+
+* `data_hopital_safe/` (généré par l'étape précédente).
+
+### Sorties générées
+
+* `Base_IRM/`
+
+  * Images IRM et masques associés, organisés par patient et par visite (`imgs/` pour la baseline, `imgs_YYYYMMDD/` pour les suivis).
+
+* `Base_PETCT/`
+
+  * Images PET, CT et masques associés.
+
+* `Base_Autres/`
+
+  * Archive des modalités non exploitées dans ce pipeline (RTDOSE, PR, etc.).
+
+* `rapport_ingestion_v6.txt`
+
+  * Rapport d'audit complet généré à la racine du projet.
+
+### Exécution
+
+```bash
+python src_DL-ML-pCR/pre_works/DICOM_ingester_but_even_meaner.py
+```
+
