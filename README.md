@@ -1446,12 +1446,11 @@ python src_DL-ML-pCR/M-L/results_plotter.py \
 ---
 
 # 🚀 Phase 2 : Approche 100% Neuronale (Modèle WB CERBERUS)
+(Les codes de cette phase sont situés dans le répertoire [`src_DL-DL-pCR/`](./src_DL-DL-pCR).)
 
 La radiomique classique (Phase 1) repose sur une extraction manuelle et mathématique des caractéristiques (*hand-crafted features*) à partir de segmentations. Bien que robuste, cette méthode comporte des limites. L'objectif de la **Phase 2** est de s'affranchir de ce pipeline d'extraction pour proposer une architecture Deep Learning multimodale *End-to-End* (de bout en bout).
 
-Les codes de cette phase sont situés dans le répertoire [`src_DL-DL-pCR/`](./src_DL-DL-pCR).
-
-## 1. L'Architecture Multimodale : `Weirdly_Busty_Cerberus.py` dans [`src_DL-DL-pCR/Model/`](./src_DL-DL-pCR/Model/)
+## 1. L'Architecture Multimodale : `Weirdly_Busty_Cerberus.py`, se trouvant dans le dossier de codes du modèle [`src_DL-DL-pCR/Model/`](./src_DL-DL-pCR/Model/)
 
 Ce modèle sur mesure est le point d'orgue de l'approche neuronale. Conçu comme un "Cerbère" à trois têtes, il intègre simultanément les trois dimensions cliniques de la patiente (l'anatomie/métabolisme, la dynamique temporelle, et la biologie) pour prédire la réponse pCR.
 
