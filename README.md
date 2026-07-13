@@ -568,7 +568,7 @@ Ce pipeline en deux étapes automatise la génération de masques robustes, capa
 
 ---
 
-# 1. Segmentation Initiale et Extraction des "Boucliers" (`mrTotalSegmentator.py`)
+# 1. Segmentation Initiale et Extraction des "Boucliers" (`mrTotalSegmentator.py` : dans [`src_DL-ML-pCR/auto_segmentation_arsenal/`](./src_DL-ML-pCR/auto_segmentation_arsenal/))
 
 Ce script utilise la puissance de **TotalSegmentator** pour deux objectifs :
 
@@ -625,7 +625,7 @@ python src_DL-ML-pCR/auto_segmentation_arsenal/mrTotalSegmentator.py \
 
 ---
 
-# 2. Sculpture et Raffinement des ROI (`mrSegmentationGrower.py`)
+# 2. Sculpture et Raffinement des ROI (`mrSegmentationGrower.py` : dans [`src_DL-ML-pCR/auto_segmentation_arsenal/`](./src_DL-ML-pCR/auto_segmentation_arsenal/))
 
 Le masque généré par **TotalSegmentator** est un point de départ.
 
@@ -674,4 +674,70 @@ python src_DL-ML-pCR/auto_segmentation_arsenal/mrSegmentationGrower.py \
     --mask_dir ./Base_PETCT_BreastMasks \
     --organs_dir ./Base_PETCT_Organs \
     --output_dir ./Base_PETCT_BreastMasks_Expanded
+```
+
+# 3. Segmentation Tumorale Déterministe (`mrAutoSegmentator.py` : dans [`src_DL-ML-pCR/auto_segmentation_arsenal/`](./src_DL-ML-pCR/auto_segmentation_arsenal/))
+
+Ce script implémente une approche par **seuillage métabolique adaptatif** (*Local Peak Segmentation*).
+
+Contrairement au **Deep Learning**, il utilise une logique purement déterministe pour extraire les lésions :
+
+* Segmentation des zones "chaudes" du PET (**SUV**) à l'intérieur de la ROI mammaire.
+* Utilisation des données **CT** pour exclure les tissus denses (os/calcifications).
+
+---
+
+## 📥 Entrées attendues (Structure source)
+
+Le script nécessite les images traitées par les étapes précédentes ainsi que les ROI mammaires "sculptées" par le script d'expansion.
+
+```plaintext id="x9f4kp"
+Base_PETCT/
+└── [ID_PATIENT]/
+    └── imgs/
+        ├── [ID]_TEP_Baseline_XXX_SUV.nii.gz  (PET SUVbw normalisé)
+        └── [ID]_TDM_XXX.nii.gz               (CT anatomique)
+
+Base_PETCT_BreastMasks_Expanded/
+└── [ID_PATIENT]_breast_roi_V6.nii.gz         (La ROI mammaire sculptée)
+```
+
+---
+
+## 📤 Sorties générées (Résultat)
+
+```plaintext id="n7m2qs"
+Base_PETCT_AutoMasks/
+└── [ID_PATIENT]_auto_tumor.nii.gz            (Masque de lésion auto-segmenté)
+```
+
+---
+
+## Méthodologie clé
+
+* **Seuillage Adaptatif :**
+
+  * Ne cherche pas un seuil global (fixe).
+  * Calcule un seuil local pour chaque cluster détecté, permettant d'isoler des lésions d'intensités variées.
+
+* **Contraintes Anatomiques CT (Optionnel) :**
+
+  * Si activé (`--use-ct`), le script croise les résultats PET avec les unités Hounsfield (**HU**) du scanner.
+  * Garantit que la lésion segmentée appartient bien aux tissus mous.
+  * Exclut les côtes ou vertèbres adjacentes.
+
+* **Nettoyage Automatique :**
+
+  * Supprime les artefacts par composantes connexes en dessous d'un volume minimal (ex: `< 0.5 mL`).
+
+---
+
+## Exécution
+
+```bash id="u5r8dc"
+python src_DL-ML-pCR/auto_segmentation_arsenal/mrAutoSegmentator.py \
+    --petct_root ./Base_PETCT \
+    --breast_masks ./Base_PETCT_BreastMasks_Expanded \
+    --output_root ./Base_PETCT_AutoMasks \
+    --use-ct --min-vol 0.5
 ```
