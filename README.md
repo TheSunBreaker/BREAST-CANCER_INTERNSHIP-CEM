@@ -13,12 +13,10 @@ Pour y parvenir, il exploite une approche IA multimodale intégrant :
 ### Stratégie Méthodologique
 Le pipeline de traitement est divisé en deux axes de recherche consécutifs :
 
-1. **Phase 1 : Approche Hybride (Deep Learning + Machine Learning)**
-[**`src_DL-ML-pCR/`**](./src_DL-ML-pCR)
+1. **Phase 1 ([**`src_DL-ML-pCR/`**](./src_DL-ML-pCR)) : Approche Hybride (Deep Learning + Machine Learning)**
    Utilisation de l'architecture nnU-Net (v2) pour la segmentation automatique de la tumeur et des zones d'intérêt. Cette étape est suivie d'une extraction massive de caractéristiques radiomiques (via PyRadiomics et algorithmes) et d'un pipeline de classification Machine Learning robuste (Nested Cross-Validation, sélection de variables univariée et multivariée avec SelectKBest, ElasticNet, Extra Trees etc.).
 
-2. **Phase 2 : Approche 100% Neuronale (Modèle WB CERBERUS)**
-[**`src_DL-DL-pCR/`**](./src_DL-DL-pCR) : Phase 2 - Approche 100% Neuronale (Modèle WB CERBERUS).
+2. **Phase 2 ([**`src_DL-DL-pCR/`**](./src_DL-DL-pCR)) : Approche 100% Neuronale (Modèle WB CERBERUS)**
    *En cours de développement.* Une architecture multimodale de bout en bout qui s'affranchit de l'extraction radiomique manuelle. Elle intègre des encodeurs pré-entraînés (ResNet 3D, DenseNet 3D), des réseaux récurrents (LSTM) pour capturer la dynamique temporelle des phases DCE, et des réseaux perceptrons multicouches (MLP) pour l'encodage des features cliniques, mais aussi pour la prédiction pCR finale.
 
 ---
