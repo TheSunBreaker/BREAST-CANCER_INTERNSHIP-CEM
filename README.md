@@ -54,12 +54,16 @@ pip install pyradiomics --no-build-isolation
 
 ---
 
-### 3. Utilisation ponctuelle sur Google Colab
+### 3. Utilisation ponctuelle
 
-Pour exécuter des tâches spécifiques déportées sur le cloud (comme la segmentation des régions d'intérêt via TotalSegmentator) :
-
+Pour exécuter des tâches spécifiques (comme la segmentation des régions d'intérêt via TotalSegmentator) :
+* Via NoteBook
 ```bash
 !pip install pydicom SimpleITK tqdm TotalSegmentator
+```
+* Via terminal classique
+```bash
+pip install --user pydicom SimpleITK tqdm TotalSegmentator
 ```
 
 ---
