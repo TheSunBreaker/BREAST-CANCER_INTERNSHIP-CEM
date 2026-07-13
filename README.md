@@ -191,11 +191,11 @@ Il assure également l'association parfaite entre les masques de segmentation (d
 
 * `Base_PETCT/`
 
-  * Images PET, CT et masques associés.
+  * Images PET, CT et masques associés, organisés par patient et par visite (`imgs/` pour la baseline, `imgs_YYYYMMDD/` pour les suivis).
 
 * `Base_Autres/`
 
-  * Archive des modalités non exploitées dans ce pipeline (RTDOSE, PR, etc.).
+  * Archive des modalités non exploitées dans ce pipeline (RTDOSE, PR, etc.), organisés par patient et par visite (`imgs/` pour la baseline, `imgs_YYYYMMDD/` pour les suivis).
 
 * `rapport_ingestion_v6.txt`
 
