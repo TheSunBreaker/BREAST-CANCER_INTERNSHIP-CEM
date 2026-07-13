@@ -297,7 +297,7 @@ Ce script gère la complexité de l'imagerie dynamique **(4D)**.
 
 Il analyse la cinétique du produit de contraste pour extraire les phases physiologiques pertinentes (**Jump-Anchored Time-Matching**) et réaligne strictement toutes les phases sur la grille spatiale de la **Baseline (T0)**.
 
-## 📥 Entrées attendues (Structure source)
+### Entrées attendues (Structure source)
 
 Le script s'attend à une arborescence contenant les images NIfTI (triées chronologiquement) et leurs masques associés, ainsi que le log temporel si utilisé en mode `INGESTEUR`.
 
@@ -317,7 +317,7 @@ Base_IRM/
 
 ---
 
-## 📤 Sorties générées (Format nnU-Net)
+### Sorties générées (Format nnU-Net)
 
 Les données sont exportées et renommées avec l'identifiant des canaux requis par **nnU-Net**.
 
@@ -355,7 +355,7 @@ L'image TEP (convertie en **SUV**) dicte la géométrie spatiale. Le volume TDM 
 
 ---
 
-## 📥 Entrées attendues (Structure source)
+### Entrées attendues (Structure source)
 
 Le script s'attend à trouver les images NIfTI normalisées en **SUVbw** et l'image scanner (**CT**) dans le même dossier.
 
@@ -371,7 +371,7 @@ Base_PETCT/
 
 ---
 
-## 📤 Sorties générées (Format nnU-Net)
+### Sorties générées (Format nnU-Net)
 
 ```plaintext
 nnunet_data/nnUNet_raw/Dataset002_BreastPETCT/
@@ -393,7 +393,7 @@ python src_DL-ML-pCR/to_nnUnet_structure/pet_and_ct_2_nnunet.py \
 
 ---
 
-# 💡 Mode Inférence (Test)
+## 💡 Mode Inférence (Test)
 
 Pour tous les orchestrateurs ci-dessus, l'ajout du flag `--inference` modifie le comportement du script :
 
@@ -598,12 +598,12 @@ Ce script utilise la puissance de **TotalSegmentator** pour deux objectifs :
 
   * Supporte l'exécution via API Python (pour intégration) ou CLI (pour serveurs distants).
 
-## Entrées attendues
+### Entrées attendues
 
 * `Base_PETCT/`
   Dossier contenant les images CT de baseline.
 
-## Sorties générées
+### Sorties générées
 
 * `Base_PETCT_BreastMasks/`
 
@@ -646,7 +646,7 @@ Ce script transforme ce masque brut en une ROI mammaire physiquement cohérente 
 
   * Utilise des opérations d'ouverture et de filtrage par composantes connexes pour éliminer les îlots parasites et les artefacts de connexion entre les seins.
 
-## Entrées attendues
+### Entrées attendues
 
 * `Base_PETCT/`
 
@@ -660,7 +660,7 @@ Ce script transforme ce masque brut en une ROI mammaire physiquement cohérente 
 
   * Boucliers anatomiques.
 
-## Sortie générée
+### Sortie générée
 
 * `Base_PETCT_BreastMasks_Expanded/`
 
@@ -678,7 +678,7 @@ python src_DL-ML-pCR/auto_segmentation_arsenal/mrSegmentationGrower.py \
 
 # 3. Segmentation Tumorale Déterministe (`mrAutoSegmentator.py` : dans [`src_DL-ML-pCR/auto_segmentation_arsenal/`](./src_DL-ML-pCR/auto_segmentation_arsenal/))
 
-Ce script implémente une approche par **seuillage métabolique adaptatif** (*Local Peak Segmentation*).
+Ce script, qui a des fins exploratoires (que vaut la méthode déterministe et "à la main" face au Deep Learning ?), implémente une approche par **seuillage métabolique adaptatif** (*Local Peak Segmentation*).
 
 Contrairement au **Deep Learning**, il utilise une logique purement déterministe pour extraire les lésions :
 
@@ -687,7 +687,7 @@ Contrairement au **Deep Learning**, il utilise une logique purement déterminist
 
 ---
 
-## 📥 Entrées attendues (Structure source)
+### Entrées attendues (Structure source)
 
 Le script nécessite les images traitées par les étapes précédentes ainsi que les ROI mammaires "sculptées" par le script d'expansion.
 
@@ -704,7 +704,7 @@ Base_PETCT_BreastMasks_Expanded/
 
 ---
 
-## 📤 Sorties générées (Résultat)
+### Sorties générées (Résultat)
 
 ```plaintext id="n7m2qs"
 Base_PETCT_AutoMasks/
@@ -741,3 +741,728 @@ python src_DL-ML-pCR/auto_segmentation_arsenal/mrAutoSegmentator.py \
     --output_root ./Base_PETCT_AutoMasks \
     --use-ct --min-vol 0.5
 ```
+---
+
+## 📊 Évaluation et Contrôle Qualité (QC) des Segmentations
+
+Une fois les prédictions générées par l'orchestrateur **nnU-Net** ou par l'auto-segmentateur déterministe, il est indispensable de mesurer leurs performances et d'en extraire des métriques cliniques fiables.
+
+Ces outils sont regroupés dans le répertoire [`src_DL-ML-pCR/evaluators/`](./src_DL-ML-pCR/evaluators).
+
+---
+
+# 1. Inspecteur Clinique et Multifocalité (`predictions_Inspector.py`)
+
+Ce script est un outil de contrôle qualité (**QC**) orienté oncologie.
+
+Il analyse les masques 3D pour en extraire les biomarqueurs géométriques et lever des alertes sur des cas cliniques complexes (**tumeurs multiples ou absentes**).
+
+## Fonctionnalités clés
+
+* **Filtre Anti-Bruit :**
+
+  * Élimine automatiquement les artefacts de prédiction millimétriques en dessous d'un volume seuil (par défaut `0.005 cm³`).
+
+* **Biomarqueurs Géométriques :**
+
+  * Calcule :
+
+    * le volume exact (en cm³),
+    * le diamètre maximal de Feret (en mm),
+  * de chaque composante grâce au moteur spatial de **SimpleITK**.
+
+* **Système d'Alerte (Statuts) :**
+
+  * `OK`
+
+    * Une seule lésion primaire détectée.
+
+  * `WARNING_MULTIFOCAL`
+
+    * Détection de plusieurs foyers tumoraux.
+    * Nécessite l'attention d'un spécialiste pour identifier la lésion primaire.
+
+  * `WARNING_ZERO_TUMOR`
+
+    * Aucune lésion trouvée.
+    * Potentiel cas de pCR ou faux négatif majeur.
+
+---
+
+### Entrée attendue
+
+Un dossier contenant les masques de segmentation (prédictions ou vérité terrain).
+
+```text id="g2v8qk"
+nnunet_data/nnUNet_results/Dataset001_DCE/predictions_test/
+├── DUKE_001.nii.gz
+├── DUKE_002.nii.gz
+└── ...
+```
+
+---
+
+### Sortie générée
+
+Un fichier texte de rapport détaillé avec le bilan par patient et un résumé statistique global.
+
+```plaintext id="p5n8ws"
+evaluations/
+└── qc_report.txt
+```
+
+---
+
+## ▶️ Exécution
+
+```bash id="e6m3rx"
+python src_DL-ML-pCR/evaluators/predictions_Inspector.py \
+    -i ./nnunet_data/nnUNet_results/Dataset001_DCE/predictions_test \
+    -o ./evaluations/qc_report.txt \
+    --min_vol 0.005
+```
+
+---
+
+# 2. Le Ring d'Évaluation des Métriques (`segs_fight_ring.py`)
+
+Ce script confronte les prédictions du modèle à la vérité terrain (**Ground Truth**) afin de calculer les scores de performance standards en imagerie médicale.
+
+Il est conçu pour être **"pCR-proof"**, c'est-à-dire qu'il gère les distances mathématiques infinies générées par les masques vides sans faire crasher l'évaluation.
+
+---
+
+## Fonctionnalités clés
+
+* **Métriques MONAI :**
+
+  * Calcule :
+
+    * le coefficient de Dice,
+    * la distance de Hausdorff maximale (**HD**),
+    * la distance de Hausdorff robuste (**HD95 par défaut**).
+
+* **Gestion Sécurisée des Masques Vides :**
+
+  * Si le patient présente une pCR (**masque GT vide**) et que le modèle prédit également un masque vide :
+
+    * Dice forcé à `1.0`.
+    * HD forcée à `0.0`.
+
+  * En cas de discordance (ex: faux positif) :
+
+    * les métriques renvoient `0.0` et `NaN` de manière contrôlée,
+    * afin de ne pas corrompre les moyennes globales.
+
+* **Appariement Intelligent :**
+
+  * Compare les fichiers des deux dossiers en se basant sur l'ID du patient, indépendamment des suffixes (`_auto_tumor`, etc.).
+
+---
+
+### Entrées attendues
+
+Deux dossiers contenant les fichiers NIfTI :
+
+* Le dossier de référence (**GT : Ground Truth**).
+* Le dossier des prédictions.
+
+```plaintext id="q1d7hc"
+nnunet_data/nnUNet_raw/Dataset001_DCE/labelsTs/             <-- (Dossier A : Vérité Terrain)
+nnunet_data/nnUNet_results/Dataset001_DCE/predictions_test/ <-- (Dossier B : Prédictions)
+```
+
+---
+
+### Sortie générée
+
+Un affichage console des moyennes/écarts-types et un fichier CSV d'analyse fine.
+
+```plaintext id="v4h9pz"
+evaluations/
+└── metrics_results.csv
+```
+
+---
+
+## ▶️ Exécution
+
+```bash id="r8w3fk"
+python src_DL-ML-pCR/evaluators/segs_fight_ring.py \
+    ./nnunet_data/nnUNet_raw/Dataset001_DCE/labelsTs \
+    ./nnunet_data/nnUNet_results/Dataset001_DCE/predictions_test \
+    --percentile 95 \
+    --csv ./evaluations/metrics_results.csv
+```
+
+# 📊 Extraction des Caractéristiques (Radiomique)
+
+Une fois les images et les masques (**vérité terrain** ou **auto-segmentés**) parfaitement alignés et structurés au format **nnU-Net**, cette étape consiste à en extraire des milliers de descripteurs quantitatifs :
+
+* formes,
+* intensités,
+* textures avancées.
+
+Ces caractéristiques (*features*) alimenteront ensuite les algorithmes de **Machine Learning** pour la prédiction de la réponse **pCR**.
+
+Les scripts d'extraction sont centralisés dans le répertoire [`src_DL-ML-pCR/features_extraction/`](./src_DL-ML-pCR/features_extraction).
+
+---
+
+# 1. Extracteur IRM DCE Multi-Phases & Cinétique (`irm_dce_features_extractor.py`)
+
+Ce script est conçu pour extraire la radiomique des examens **IRM 4D dynamiques** en respectant les normalisations appliquées en amont.
+
+## Fonctionnalités clés
+
+* **Extraction Multi-Zones :**
+
+  * Calcule les caractéristiques sur :
+
+    * la tumeur (**Classe 1**),
+    * deux couronnes péritumorales :
+
+      * 0-5 mm,
+      * 5-10 mm.
+  * Ces couronnes sont construites via une distance Euclidienne exacte (conforme **IBSI**).
+
+* **Pivotement (*Flattening*) :**
+
+  * Condense toutes les phases temporelles d'une patiente :
+
+    * T0,
+    * Wash-in,
+    * +90s,
+    * +180s,
+  * sur une seule et unique ligne de données.
+
+* **Delta-Radiomiques Automatiques :**
+
+  * Calcule dynamiquement les deltas absolus et relatifs entre chaque phase post-contraste et la phase native (**Baseline**).
+  * Capture ainsi l'évolution de la texture pendant la perfusion du contraste.
+
+* **Isotropisation PyRadiomics :**
+
+  * Force un espacement `[1, 1, 1]` mm en interne.
+  * Garantit des matrices de texture robustes et invariantes :
+
+    * GLCM,
+    * GLRLM.
+
+---
+
+## 📥 Entrées attendues
+
+Le script lit directement les dossiers d'entraînement préparés pour **nnU-Net**.
+
+* `imagesTr/`
+
+  * Contient les NIfTI de chaque phase :
+
+    * `_0000.nii.gz`,
+    * `_0001.nii.gz`,
+    * etc.
+
+* `labelsTr/`
+
+  * Contient les masques tumoraux uniques.
+
+---
+
+## 📤 Sorties générées
+
+* `radiomics_results_mri_FLATTENED.csv`
+
+  * Dataset final prêt pour le Machine Learning.
+
+* `radiomics_results_mri_FLATTENED.xlsx`
+
+  * Version Excel du dataset final.
+
+* `run_metadata.json`
+
+  * Fichier de traçabilité des paramètres d'extraction.
+
+---
+
+## ▶️ Exécution
+
+```bash id="z2m7qn"
+python src_DL-ML-pCR/features_extraction/irm_dce_features_extractor.py \
+    --images_dir ./nnunet_data/nnUNet_raw/Dataset001_DCE/imagesTr \
+    --labels_dir ./nnunet_data/nnUNet_raw/Dataset001_DCE/labelsTr \
+    --output_dir ./results_radiomics_mri \
+    --peri_inner_mm 5.0 \
+    --peri_outer_mm 10.0 \
+    --bin_width 25.0
+```
+
+---
+
+# 2. Extracteur Multimodal TEP/TDM (`pet-ct_features_extractor.py`)
+
+Ce script combine l'imagerie :
+
+* métabolique (**TEP en SUVbw**),
+* anatomique (**TDM en unités Hounsfield**),
+
+afin de fournir un tableau de bord quantitatif complet.
+
+---
+
+## Fonctionnalités clés
+
+* **Ré-échantillonnage Isotropique Strict :**
+
+  * Les images sont projetées sur une grille de `2x2x2 mm` en mémoire.
+  * Condition requise pour que l'analyse des textures locales sur le PET soit :
+
+    * cliniquement valide,
+    * invariante par rotation.
+
+* **Métriques Métaboliques et Anatomiques :**
+
+  * Au-delà des textures PyRadiomics, le script calcule des indices cliniques purs :
+
+    * **SUVpeak** (sur un voisinage `3x3x3`),
+    * **MTV** (*Metabolic Tumor Volume*, seuils à `41%` et `2.5`),
+    * **TLG** (*Total Lesion Glycolysis*).
+
+* **Asymétrie et Topologie :**
+
+  * Isole :
+
+    * le sein ipsilatéral (malade),
+    * le sein controlatéral (sain).
+  * Calcule un ratio d'asymétrie d'intensité (**TBR : Tumor to Background Ratio**).
+
+* **Optimisation RAM :**
+
+  * Applique un cropping sur la boîte englobante du masque mammaire.
+  * Évite de traiter les voxels vides de l'air ambiant.
+
+---
+
+## 📥 Entrées attendues
+
+* `Dataset002_BreastPETCT/`
+
+  * Dataset nnU-Net contenant :
+
+    * les TEP (`_0000.nii.gz`),
+    * les TDM (`_0001.nii.gz`) alignés,
+    * la tumeur (`labelsTr`).
+
+* `Base_PETCT_BreastMasks_Expanded/`
+
+  * Dossier contenant les ROI mammaires globales du patient.
+
+---
+
+## 📤 Sorties générées
+
+* `radiomics_features_petct.csv`
+
+  * Dataset final contenant les features TEP et TDM :
+
+    * intratumorales,
+    * péritumorales,
+    * background.
+
+* `radiomics_features_petct.xlsx`
+
+  * Version Excel du dataset final.
+
+---
+
+## ▶️ Exécution
+
+```bash id="q4w8lc"
+python src_DL-ML-pCR/features_extraction/pet-ct_features_extractor.py \
+    --nnunet_dir ./nnunet_data/nnUNet_raw/Dataset002_BreastPETCT \
+    --breast_dir ./Base_PETCT_BreastMasks_Expanded \
+    --output_csv ./results_radiomics_petct/radiomics_features_petct.csv
+```
+
+## 🧮 Préparation pour le Machine Learning (ML Pre-works)
+
+Avant de lancer les algorithmes de classification (**Phase 1**), les données radiomiques et cliniques doivent être fusionnées, nettoyées et encodées numériquement.
+
+Les scripts de cette étape sont centralisés dans le répertoire [`src_DL-ML-pCR/M-L_preworks/`](./src_DL-ML-pCR/M-L_preworks).
+
+---
+
+# 1. Nettoyage et Encodage Clinique (`prepare_clinicals.py`)
+
+Les bases de données cliniques brutes (fichiers Excel) contiennent souvent :
+
+* du texte libre,
+* des formats de date hétérogènes,
+* des conventions de nommage variables.
+
+Ce script agit comme un parseur intelligent pour standardiser ces données et les transformer en variables (*features*) utilisables par les modèles d'IA.
+
+---
+
+## Fonctionnalités clés
+
+* **Ingénierie des caractéristiques (*Feature Engineering*) :**
+
+  * Calcule précisément l'âge au diagnostic (`AgeAtDiagnosis`) à partir :
+
+    * des dates de naissance,
+    * de la date du premier diagnostic.
+
+* **Parsing Regex :**
+
+  * Extrait automatiquement les valeurs numériques :
+
+    * des stades TNM (ex: `"T2"` → `2.0`),
+    * des grades,
+    * du Ki-67 (conversion en pourcentages stricts).
+
+* **Encodage des Biomarqueurs :**
+
+  * Binarise strictement :
+
+    * les récepteurs hormonaux (**ER/PR**).
+  * Convertit :
+
+    * les statuts **HER2**,
+    * les **nTILs**,
+    * en catégories numériques.
+
+* **One-Hot Encoding (OHE) :**
+
+  * Applique un encodage disjonctif (`get_dummies` avec `drop_first=True`) sur les variables catégorielles :
+
+    * Histologie,
+    * HER2.
+  * Évite le piège de la colinéarité parfaite.
+  * Rend les données compatibles avec des modèles sensibles comme :
+
+    * la Régression Logistique,
+    * les SVM.
+
+---
+
+### Entrée attendue
+
+* Un fichier Excel ou CSV contenant les données cliniques brutes du patient.
+
+Exemple :
+
+```text
+clinicals.xlsx
+```
+
+---
+
+### Sortie générée
+
+* `ready_steady_clinicals.xlsx`
+
+Dataset clinique :
+
+* chiffré,
+* binarisé,
+* prêt pour la concaténation.
+
+---
+
+## ▶️ Exécution
+
+```bash id="k7d3px"
+python src_DL-ML-pCR/M-L_preworks/prepare_clinicals.py \
+    --input ./data/cliniques_brutes.xlsx \
+    --output ./data/ready_steady_clinicals.xlsx
+```
+
+---
+
+# 2. Tagger de Vérité Terrain pCR (`PCR_tagger.py`)
+
+Pour que les modèles puissent apprendre (**Apprentissage Supervisé**), chaque ligne de patient dans les fichiers radiomiques doit être étiquetée avec la cible à prédire :
+
+**la réponse pathologique complète (`pcrstatus`).**
+
+Ce script croise de manière sécurisée les fichiers de features avec la base clinique.
+
+---
+
+## Fonctionnalités clés
+
+* **Recherche Robuste (*Sniffer*) :**
+
+  * Détecte automatiquement les séparateurs des fichiers CSV :
+
+    * virgule,
+    * point-virgule,
+    * tabulation.
+  * Prévient les crashs liés aux exports Excel régionaux.
+
+* **Normalisation des Identifiants :**
+
+  * Harmonise les noms de colonnes :
+
+    * `case_id`,
+    * `patient_id`,
+    * deviennent `subject_id`.
+  * Sécurise leur typage en chaînes de caractères (`string`) afin de garantir une jointure (*merge*) parfaite.
+
+* **Exclusion Sécurisée :**
+
+  * Retire automatiquement du dataset d'entraînement les patients dont le statut **pCR** est inconnu ou manquant.
+
+* **Traitement Multimodal :**
+
+  * Peut étiqueter simultanément les fichiers radiomiques issus :
+
+    * de la pipeline IRM,
+    * de la pipeline TEP/TDM,
+  * en une seule exécution.
+
+---
+
+### Entrées attendues
+
+* `--clinical`
+
+  * Le fichier de référence contenant :
+
+    * les identifiants,
+    * le `pcrstatus`.
+
+* `--petct`
+
+  * Les CSV de features radiomiques TEP/TDM générés à l'étape précédente.
+
+* `--mri`
+
+  * Les CSV de features radiomiques IRM générés à l'étape précédente.
+
+---
+
+### Sorties générées
+
+Les fichiers radiomiques mis à jour :
+
+* `*_features_with_pcr.csv`
+* `*_features_with_pcr.xlsx`
+
+Chaque patient possède désormais sa cible d'entraînement.
+
+---
+
+## ▶️ Exécution
+
+```bash id="x4q8sm"
+python src_DL-ML-pCR/M-L_preworks/PCR_tagger.py \
+    --clinical ./data/ready_steady_clinicals.xlsx \
+    --mri ./results_radiomics_mri/radiomics_results_mri_FLATTENED.csv \
+    --petct ./results_radiomics_petct/radiomics_features_petct.csv
+```
+
+# 🤖 Modélisation et Prédiction (Machine Learning)
+
+Cette étape constitue l'aboutissement de la **Phase 1**.
+
+L'objectif est de prédire la réponse pathologique complète (**pCR**) en combinant :
+
+* les données cliniques,
+* les données métaboliques (**TEP/TDM**),
+* les données dynamiques (**IRM**).
+
+Pour contrer le fléau de la dimensionnalité (**beaucoup de variables radiomiques pour des cohortes souvent réduites**), le pipeline repose sur :
+
+* un filtrage drastique,
+* une validation extrêmement stricte.
+
+Les scripts se trouvent dans le répertoire [`src_DL-ML-pCR/M-L/`](./src_DL-ML-pCR/M-L).
+
+---
+
+# 1. Entraînement et Validation Croisée Imbriquée (`NestedCV.py`)
+
+Ce script est le cœur prédictif du projet.
+
+Il teste, compare et valide plusieurs familles d'algorithmes (**linéaires et non-linéaires**) en s'assurant qu'aucune fuite de données (**Data Leakage**) ne vienne fausser les résultats.
+
+---
+
+## Méthodologie "En Entonnoir" (*Feature Selection*)
+
+1. **Pré-filtrage :**
+
+   * Suppression des variables à variance nulle.
+   * Élimination de la redondance :
+
+     * filtre de corrélation > `0.95`.
+
+2. **Réduction douce (Filtre Univarié) :**
+
+   * Utilisation de `SelectKBest` (**Mutual Information**) pour isoler les **100 à 300** variables les plus prometteuses.
+
+3. **Sélection Multivariée :**
+
+   * Un dernier filtre algorithmique sélectionne la signature radiomique finale optimale :
+
+     * `ElasticNet` pour les modèles linéaires,
+     * `ExtraTrees` / `LightGBM` pour les modèles basés sur les arbres.
+
+---
+
+## Nested Cross-Validation
+
+Une double boucle de validation croisée est utilisée :
+
+* **Outer 3-fold**
+
+  * Évaluation de la généralisation.
+
+* **Inner 3-fold**
+
+  * Optimisation des hyperparamètres avec `GridSearchCV`.
+
+Cette stratégie garantit une estimation robuste et honnête des performances.
+
+---
+
+## Algorithmes comparés
+
+Les modèles évalués sont :
+
+* Régression Logistique (**LR**),
+* SVM,
+* Random Forest (**RF**),
+* ExtraTrees (**ET**),
+* HistGradientBoosting (**HGB**),
+* KNN,
+* Perceptron Multicouche (**MLP**).
+
+---
+
+## 📥 Entrées attendues
+
+* Les fichiers de features générés à l'étape précédente :
+
+  * Clinique,
+  * IRM,
+  * TEP/TDM.
+
+Le script teste automatiquement toutes les combinaisons possibles :
+
+* modèles unimodaux,
+* fusions multimodales.
+
+---
+
+## 📤 Sorties générées
+
+* Dossier `_modality_outputs/`
+
+Contient :
+
+* les modèles finaux entraînés (`.joblib`),
+* les listes des variables retenues,
+* les métriques détaillées par fold,
+* un résumé global :
+
+  * `summary_metrics.csv`.
+
+---
+
+## ▶️ Exécution
+
+```bash id="q7w2nb"
+python src_DL-ML-pCR/M-L/NestedCV.py
+```
+
+---
+
+# 2. Génération des Visualisations (`results_plotter.py`)
+
+Une fois l'entraînement terminé, ce script lit les tableaux de résultats et produit des graphiques clairs, esthétiques (**style Seaborn professionnel**) et prêts à être intégrés dans des publications ou des présentations.
+
+---
+
+## Visualisations générées
+
+### Comparaison des Modèles
+
+* Barplot global des performances (**ROC-AUC moyen**).
+* Permet d'identifier immédiatement la meilleure combinaison de modalités :
+
+Exemple :
+
+* Clinique + IRM + TEP/TDM.
+
+---
+
+### Matrices de Confusion
+
+* Heatmaps cumulées sur les folds pour les **5 meilleurs modèles**.
+* Analyse de la répartition :
+
+  * Faux Positifs,
+  * Faux Négatifs.
+
+---
+
+### Importance des Variables
+
+* Barplot horizontal identifiant le **Top 15** des caractéristiques les plus influentes :
+
+  * radiomiques,
+  * cliniques.
+
+---
+
+## 📥 Entrée attendue
+
+* Le dossier `_modality_outputs/` généré par `NestedCV.py`.
+
+---
+
+## 📤 Sortie générée
+
+* Dossier `_plots/`
+
+Contient les graphiques au format :
+
+* PNG,
+* haute résolution (**300 dpi**).
+
+---
+
+## ▶️ Exécution
+
+```bash id="j4p8sm"
+python src_DL-ML-pCR/M-L/results_plotter.py \
+    -i ./_modality_outputs \
+    -o ./_plots
+```
+
+---
+
+# 🚀 Phase 2 : Approche 100% Neuronale (Modèle WB CERBERUS)
+
+La radiomique classique (**Phase 1**) repose sur une extraction manuelle et mathématique des caractéristiques (*hand-crafted features*) à partir des segmentations.
+
+Bien que robuste, cette méthode comporte des limites.
+
+> Et si l'on laissait un réseau de neurones découvrir lui-même ses propres descripteurs spatio-temporels directement depuis l'imagerie brute ?
+
+C'est tout l'enjeu de la **Phase 2**, actuellement en cours d'élaboration.
+
+Située dans le répertoire :
+
+```text
+src_DL-DL-pCR/
+```
+
+cette seconde approche s'affranchit du pipeline d'extraction radiomique pour proposer une architecture **Deep Learning multimodale de bout en bout (End-to-End)** :
+
+## Modèle WB CERBERUS
+
+Une architecture neuronale capable d'apprendre directement les représentations utiles depuis les données d'imagerie.
