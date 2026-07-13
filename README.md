@@ -283,46 +283,61 @@ python src_DL-ML-pCR/pre_works/suv_converter_nii_maker.py ./Base_PETCT
 
 Une fois les données nettoyées, converties en NIfTI et normalisées physiquement, elles doivent être restructurées selon les spécifications strictes du framework **nnU-Net v2** :
 
-* Renommage des canaux en `_0000`.
+* Renommage des canaux en `_0000`, `_0001`, etc.
 * Séparation en `imagesTr` pour l'entraînement et `labelsTr` pour les masques.
-* Génération du `dataset.json`.
+* Génération automatique du fichier `dataset.json`.
 
 Les scripts d'orchestration de cette étape se trouvent dans le répertoire [`src_DL-ML-pCR/to_nnUnet_structure/`](./src_DL-ML-pCR/to_nnUnet_structure).
 
 ---
 
-## 1. Orchestrateur IRM DCE (`irm2nnunet_v2_PA.py`)
+# 1. Orchestrateur IRM DCE (`irm2nnunet_v2_PA.py`)
 
-Ce script gère la complexité de l'imagerie dynamique (**4D**). Il ne se contente pas de copier des fichiers : il analyse la cinétique du produit de contraste pour extraire les phases physiologiques pertinentes, quelle que soit la machine ou le protocole d'acquisition.
+Ce script gère la complexité de l'imagerie dynamique **(4D)**.
 
-### Fonctionnalités clés
+Il analyse la cinétique du produit de contraste pour extraire les phases physiologiques pertinentes (**Jump-Anchored Time-Matching**) et réaligne strictement toutes les phases sur la grille spatiale de la **Baseline (T0)**.
 
-* **Jump-Anchored Time-Matching :**
+## 📥 Entrées attendues (Structure source)
 
-  * Détecte automatiquement le moment de l'injection (le "saut" de contraste) et ancre les phases temporelles sur cet événement.
-  * Il extrait typiquement :
+Le script s'attend à une arborescence contenant les images NIfTI (triées chronologiquement) et leurs masques associés, ainsi que le log temporel si utilisé en mode `INGESTEUR`.
 
-    * *Baseline* (T0)
-    * *Wash-in* immédiat
-    * *Plateau* (+90s)
-    * *Wash-out* (+180s)
+```text
+Base_IRM/
+└── [ID_PATIENT]/
+    ├── imgs/
+    │   ├── image_01.nii.gz
+    │   ├── image_02.nii.gz
+    │   ├── ...
+    │   └── DCE_temporal_log.txt  <-- Requis en mode INGESTEUR
+    └── mask/
+        └── masque_FUSED.nii.gz   <-- Requis (sauf si mode --inference)
+```
 
-* **Alignement & Normalisation :**
+> **Note :** En mode `MAMAMIA`, le fichier CSV externe contenant la timeline et le statut hormonal doit être fourni via le paramètre `--csv`.
 
-  * Réaligne strictement toutes les phases temporelles sur la grille spatiale de la Baseline.
-  * Applique une normalisation Z-score globale par patient.
+---
 
-* **Filtre Oncologique (TNBC) :**
+## 📤 Sorties générées (Format nnU-Net)
 
-  * Via le flag `--triple_neg_only`, le script peut croiser les données avec un registre clinique (Excel/CSV) pour n'exporter que les patientes atteintes de cancer du sein Triple Négatif (ER=0, PR=0, HER2=0).
+Les données sont exportées et renommées avec l'identifiant des canaux requis par **nnU-Net**.
 
-* **Modes de tracking :**
+```plaintext
+nnunet_data/nnUNet_raw/Dataset001_DCE/
+├── dataset.json                  <-- Généré automatiquement
+├── imagesTr/                     <-- (Ou imagesTs si --inference)
+│   ├── [ID_PATIENT]_0000.nii.gz  (Canal 0 : Baseline)
+│   ├── [ID_PATIENT]_0001.nii.gz  (Canal 1 : Wash-in immédiat)
+│   ├── [ID_PATIENT]_0002.nii.gz  (Canal 2 : T_inj + 90s)
+│   └── [ID_PATIENT]_0003.nii.gz  (Canal 3 : T_inj + 180s)
+└── labelsTr/
+    └── [ID_PATIENT].nii.gz       (Masque réaligné sur la Baseline)
+```
 
-  * Compatible avec les données internes (mode `INGESTEUR`) et les bases publiques comme MAMA-MIA (mode `MAMAMIA`).
+Un rapport global `rapport_extraction_DCE_<mode>.txt` est également généré à la racine de `nnunet_data`.
 
-### Exécution (Mode Entraînement - 4 Canaux)
+### ▶️ Commande d'exécution (Mode Entraînement - 4 Canaux)
 
-```bash id="zj7q9b"
+```bash
 python src_DL-ML-pCR/to_nnUnet_structure/irm2nnunet_v2_PA.py \
     --src ./Base_IRM \
     --nnunet ./nnunet_data \
@@ -332,32 +347,45 @@ python src_DL-ML-pCR/to_nnUnet_structure/irm2nnunet_v2_PA.py \
 
 ---
 
-## 2. Orchestrateur TEP / TDM (`pet_and_ct_2_nnunet.py`)
+# 2. Orchestrateur TEP / TDM (`pet_and_ct_2_nnunet.py`)
 
 Ce script prépare les données d'imagerie métabolique et anatomique pour un entraînement multimodal.
 
-Le principe fondamental ici est que l'image **TEP (convertie en SUV)** dicte la géométrie spatiale.
+L'image TEP (convertie en **SUV**) dicte la géométrie spatiale. Le volume TDM (**CT**) et le masque sont strictement ré-échantillonnés et recalés sur cette grille de référence, avec remplissage des zones vides par de l'air à **-1000.0 HU** pour le TDM.
 
-### Fonctionnalités clés
+---
 
-* **Ancrage Spatial Absolu :**
+## 📥 Entrées attendues (Structure source)
 
-  * Le volume TEP devient le canal `_0000`.
-  * Le volume TDM (CT) devient le canal `_0001`.
-  * Le CT est strictement ré-échantillonné et recalé sur la grille du TEP.
+Le script s'attend à trouver les images NIfTI normalisées en **SUVbw** et l'image scanner (**CT**) dans le même dossier.
 
-* **Gestion de l'air ambiant :**
+```plaintext
+Base_PETCT/
+└── [ID_PATIENT]/
+    ├── imgs/
+    │   ├── [ID]_TEP_Baseline_A1B2C_SUV.nii.gz  <-- PET normalisé (référence spatiale)
+    │   └── [ID]_TDM_A1B2C.nii.gz               <-- CT à aligner
+    └── mask/
+        └── [ID]_mask_FUSED.nii.gz              <-- Requis (sauf si mode --inference)
+```
 
-  * Lors du recalage du TDM, les pixels manquants créés par la transformation spatiale sont remplis avec la valeur `-1000.0 HU` (*Unités Hounsfield*).
-  * Cette valeur correspond à l'air et permet d'éviter les artefacts aux frontières de l'image.
+---
 
-* **Sécurité SUV :**
+## 📤 Sorties générées (Format nnU-Net)
 
-  * Le script vérifie obligatoirement que l'image source a bien été normalisée en **SUVbw** avant de l'accepter dans le jeu d'entraînement.
+```plaintext
+nnunet_data/nnUNet_raw/Dataset002_BreastPETCT/
+├── dataset.json                  <-- Généré automatiquement
+├── imagesTr/                     <-- (Ou imagesTs si --inference)
+│   ├── [ID_PATIENT]_0000.nii.gz  (Canal 0 : PET copié tel quel)
+│   └── [ID_PATIENT]_0001.nii.gz  (Canal 1 : CT aligné sur le PET)
+└── labelsTr/
+    └── [ID_PATIENT].nii.gz       (Masque aligné sur le PET)
+```
 
-### Exécution (Mode Entraînement)
+### ▶️ Commande d'exécution (Mode Entraînement)
 
-```bash id="2tqv1a"
+```bash
 python src_DL-ML-pCR/to_nnUnet_structure/pet_and_ct_2_nnunet.py \
     --src ./Base_PETCT \
     --nnunet ./nnunet_data
@@ -365,15 +393,15 @@ python src_DL-ML-pCR/to_nnUnet_structure/pet_and_ct_2_nnunet.py \
 
 ---
 
-## 💡 Mode Inférence (Test)
+# 💡 Mode Inférence (Test)
 
 Pour tous les orchestrateurs ci-dessus, l'ajout du flag `--inference` modifie le comportement du script :
 
-* Il ne cherche pas de masques de vérité terrain (*labels*).
+* Il ne cherche pas de masques de vérité terrain (**labels**).
 * Il n'écrase pas le fichier `dataset.json` de configuration d'entraînement.
-* Il exporte les images directement dans le dossier `imagesTs` (*Test Set*).
+* Il exporte les images directement dans le dossier `imagesTs` (**Test Set**).
 * Les données sont prêtes à être ingérées par la commande :
-
 ```bash
 nnUNetv2_predict
 ```
+ou via le Couteau Suisse nnUNet conçu pour toutes les intérractions avec le modèle nnU-Net.
