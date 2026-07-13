@@ -404,4 +404,157 @@ Pour tous les orchestrateurs ci-dessus, l'ajout du flag `--inference` modifie le
 ```bash
 nnUNetv2_predict
 ```
-ou via le Couteau Suisse nnUNet conçu pour toutes les intérractions avec le modèle nnU-Net.
+ou via le Couteau Suisse nnUNet que j'ai conçu pour toutes les interactions avec le modèle.
+
+## 5. Séparation Train / Test Idempotente (`nnUNET_struct_adv_train-test_splitter.py`)
+
+Avant de lancer l'entraînement, il est crucial d'isoler un jeu de données de test (**Test Set**) qui ne sera jamais vu par le modèle. Ce script effectue cette séparation de manière sécurisée et reproductible.
+
+### Fonctionnalités clés
+
+* **Idempotence :**
+
+  * Le script peut être relancé sans risque.
+  * S'il détecte que le quota de patients de test est déjà atteint, il s'arrête sans corrompre le dataset.
+
+* **Gestion des Préférences :**
+
+  * Possibilité de forcer l'inclusion de patients spécifiques (via leur ID ou index) dans le set de test.
+  * Très utile pour s'assurer que des cas cliniques complexes sont gardés pour l'évaluation finale.
+
+* **Mise à jour automatique :**
+
+  * Ajuste automatiquement la valeur `numTraining` dans le fichier `dataset.json`.
+
+### Action
+
+Déplace un pourcentage défini (ex: **20%**) des fichiers depuis :
+
+```
+imagesTr / labelsTr
+```
+
+vers :
+
+```
+imagesTs / labelsTs
+```
+
+### Exemple d'exécution
+
+```bash
+python src_DL-ML-pCR/nnUNET/nnUNET_struct_adv_train-test_splitter.py \
+    --dataset_dir ./nnunet_data/nnUNet_raw/Dataset001_DCE \
+    --ratio 0.20 \
+    --pref QIN-BREAST-01-0005 QIN-BREAST-01-0012 0 1
+```
+
+---
+
+# 🚀 Entraînement et Inférence : Le Couteau Suisse nnU-Net
+
+Le script `nnUNET_v2_swiss_knife.py` situé dans [`src_DL-ML-pCR/nnUNET/`](./src_DL-ML-pCR/nnUNET/) est l'orchestrateur ultime pour interagir avec le framework **nnU-Net**.
+
+## Pourquoi un Couteau Suisse ?
+
+L'exécution native de nnU-Net sur des serveurs de calcul (via Docker ou Slurm) pose souvent des problèmes critiques liés à la limitation de la mémoire partagée (`/dev/shm`), entraînant des crashs lors de la Data Augmentation ou de l'export des prédictions (OOM).
+
+Ce script encapsule l'exécution de nnU-Net pour patcher ces failles de manière transparente.
+
+---
+
+# Sécurités HPC & Docker implémentées
+
+* **Bascule de la stratégie de partage PyTorch :**
+
+  * Passage sur le système de fichiers (`file_system`) au lieu de la mémoire RAM partagée.
+
+* **Forçage de `nnUNet_n_proc_DA=0` :**
+
+  * Désactivation du parallélisme excessif lors de la Data Augmentation.
+
+* **Désactivation conditionnelle du parallélisme :**
+
+  * Lors de l'export de validation via la variable d'environnement personnalisée :
+
+    ```bash
+    NNUNET_DISABLE_PARALLEL_VAL_EXPORT
+    ```
+
+* **Monitoring TensorBoard threadé robuste :**
+
+  * Gestion des reprises et de l'historique.
+
+---
+
+# Exemples d'utilisation du Couteau Suisse
+
+## 1. Prétraitement (Plan & Preprocess)
+
+Extraction des empreintes de données (*fingerprints*) et planification des architectures U-Net.
+
+```bash
+python src_DL-ML-pCR/nnUNET/nnUNET_v2_swiss_knife.py preprocess -d 001
+```
+
+---
+
+## 2. Entraînement (Train)
+
+Entraînement séquentiel ou ciblé, avec suivi TensorBoard automatique.
+
+### Entraîner uniquement le fold 0
+
+```bash
+python src_DL-ML-pCR/nnUNET/nnUNET_v2_swiss_knife.py train -d 001 -c 3d_fullres -f 0
+```
+
+### Entraîner tous les folds (0 à 4) séquentiellement
+
+*(Idéal pour éviter les crashs GPU)*
+
+```bash
+python src_DL-ML-pCR/nnUNET/nnUNET_v2_swiss_knife.py train -d 001 -c 3d_fullres -f all
+```
+
+> Options disponibles :
+>
+> * `--resume` : reprendre un entraînement interrompu.
+> * `--pretrained_weights` : effectuer un Fine-Tuning.
+
+---
+
+## 3. Inférence (Predict)
+
+Génération des masques de segmentation sur le **Test Set** avec **Ensembling** (combinaison des prédictions de plusieurs folds).
+
+```bash
+python src_DL-ML-pCR/nnUNET/nnUNET_v2_swiss_knife.py predict \
+    -d 001 -c 3d_fullres -f all \
+    -i ./nnunet_data/nnUNet_raw/Dataset001_DCE/imagesTs \
+    -o ./nnunet_data/nnUNet_results/Dataset001_DCE/predictions_test
+```
+
+---
+
+## 4. Évaluation (Evaluate)
+
+Calcul des métriques (**Dice**, **Hausdorff**, etc.) en comparant les prédictions à la vérité terrain.
+
+```bash
+python src_DL-ML-pCR/nnUNET/nnUNET_v2_swiss_knife.py evaluate \
+    -g ./nnunet_data/nnUNet_raw/Dataset001_DCE/labelsTs \
+    -p ./nnunet_data/nnUNet_results/Dataset001_DCE/predictions_test
+```
+
+---
+
+## 5. Export du Modèle (Export)
+
+Package les poids finaux du modèle dans une archive `.zip` pour un déploiement ou un partage facilité.
+
+```bash
+python src_DL-ML-pCR/nnUNET/nnUNET_v2_swiss_knife.py export \
+    -d 001 \
+    --zip mon_modele_dce.zip
+```
