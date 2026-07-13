@@ -116,7 +116,7 @@ Ces données sont issues du challenge MAMA-MIA. Le téléchargement automatisé 
 
 ## 🛠️ Prétraitement et Ingestion des Données
 
-Le pipeline de prétraitement est divisé en plusieurs étapes majeures, dont le code majoritairement localisé dans le répertoire [`src_DL-ML-pCR/pre_works/`](./src_DL-ML-pCR/pre_works). Il permet de passer de dossiers DICOM bruts et désorganisés à une base de données NIfTI propre, triée longitudinalement et prête pour l'extraction radiomique ou l'entraînement **nnU-Net**.
+Le pipeline de prétraitement est divisé en plusieurs étapes majeures, dont le code majoritairement localisé dans les répertoires [`src_DL-ML-pCR/pre_works/`](./src_DL-ML-pCR/pre_works), et [`src_DL-ML-pCR/to_nnUnet_structure/`](./src_DL-ML-pCR/to_nnUnet_structure). Il permet de passer de dossiers DICOM bruts et désorganisés à une base de données NIfTI propre, triée longitudinalement et prête pour l'extraction radiomique ou l'entraînement **nnU-Net**.
 
 ---
 
