@@ -1447,18 +1447,66 @@ python src_DL-ML-pCR/M-L/results_plotter.py \
 
 # 🚀 Phase 2 : Approche 100% Neuronale (Modèle WB CERBERUS)
 
-La radiomique classique (**Phase 1**) repose sur une extraction manuelle et mathématique des caractéristiques (*hand-crafted features*) à partir des segmentations.
+La radiomique classique (Phase 1) repose sur une extraction manuelle et mathématique des caractéristiques (*hand-crafted features*) à partir de segmentations. Bien que robuste, cette méthode comporte des limites. L'objectif de la **Phase 2** est de s'affranchir de ce pipeline d'extraction pour proposer une architecture Deep Learning multimodale *End-to-End* (de bout en bout).
 
-Bien que robuste, cette méthode comporte des limites.
+Les codes de cette phase sont situés dans le répertoire [`src_DL-DL-pCR/`](./src_DL-DL-pCR).
 
-> Et si l'on laissait un réseau de neurones découvrir lui-même ses propres descripteurs spatio-temporels directement depuis l'imagerie brute ?
+## 1. L'Architecture Multimodale : `Weirdly_Busty_Cerberus.py` dans [`src_src_DL-DL-pCR/Model/`](./src_src_DL-DL-pCR/Model/)
 
-C'est tout l'enjeu de la **Phase 2**, actuellement en cours d'élaboration.
+Ce modèle sur mesure est le point d'orgue de l'approche neuronale. Conçu comme un "Cerbère" à trois têtes, il intègre simultanément les trois dimensions cliniques de la patiente (l'anatomie/métabolisme, la dynamique temporelle, et la biologie) pour prédire la réponse pCR.
 
-Située dans le répertoire : [`src_DL-DL-pCR/`](./src_DL-DL-pCR/).
+* **Les 3 branches du réseau :**
+  1. **Tête IRM (4D Spatio-Temporelle) :** L'IRM DCE étant dynamique, cette branche utilise un encodeur spatial `ResNet10` 3D (encapsulé dans une architecture *Time-Distributed*) couplé à un réseau récurrent `LSTM` pour capturer la cinétique de rehaussement du produit de contraste au fil du temps.
+  2. **Tête TEP / TDM (3D Multicanal) :** Le scanner et le PET sont empilés sur deux canaux (`in_channels=2`). Ils traversent un encodeur `DenseNet121` 3D, excellent pour fusionner les caractéristiques morphologiques (CT) et métaboliques (SUV) à plusieurs échelles.
+  3. **Tête Clinique :** Un Perceptron Multicouche (MLP) encode le profil biologique de la patiente (Statut Hormonal, Âge, Stade TNM, etc.).
+* **La Tête de Fusion (Classification) :** Les trois vecteurs d'apprentissage (Embeddings) sont concaténés et passent par un MLP final avec *Dropout* régularisé pour émettre la probabilité finale de pCR.
 
-cette seconde approche s'affranchit du pipeline d'extraction radiomique pour proposer une architecture **Deep Learning multimodale de bout en bout (End-to-End)** :
+### Optimisations Oncologiques Spécifiques
 
-## Modèle WB CERBERUS
+Le script implémente plusieurs stratégies critiques pour surmonter les défis inhérents à l'imagerie médicale :
 
-Une architecture neuronale capable d'apprendre directement les représentations utiles depuis les données d'imagerie.
+* **Transfer Learning Chirurgical (MedicalNet) :** Les poids pré-entraînés sur de larges cohortes médicales sont chargés dans les backbones de MONAI. Pour gérer la particularité de la tête TEP/TDM (2 canaux en entrée contre 1 pour les poids pré-entraînés), le script duplique intelligemment les filtres de la première couche de convolution en divisant leur amplitude par 2, préservant ainsi la stabilité mathématique du signal.
+* **Fonction de Coût (Focal Loss) :** Les jeux de données en oncologie sont souvent déséquilibrés (ex: moins de patientes atteignant la pCR). La `Focal Loss` remplace la *Cross-Entropy* classique en appliquant un poids dynamique : elle réduit la pénalité pour les patientes faciles à classifier et force le réseau à se concentrer sur les cas limites et difficiles.
+
+**▶️ Exemple de Test Intégré (Dry Run) :**
+Le script contient un bloc d'exécution `__main__` permettant de simuler un passage de tenseurs aléatoires pour vérifier l'intégrité de la VRAM, de la fonction de perte et de l'architecture avant de lancer le véritable entraînement.
+```bash
+python src_DL-DL-pCR/Model/Weirdly_Busty_Cerberus.py
+```
+## 2. Le Pré-processeur de Tenseurs (`images_pre-processor.py` : dans [`src_DL-DL-pCR/Fully_Neuronal_Way_Pre-works/`](./src_DL-DL-pCR/Fully_Neuronal_Way_Pre-works/))
+
+Les réseaux de neurones convolutionnels 3D exigent que toutes les données d'entrée possèdent la même forme matricielle (shape), par exemple `[96, 96, 96]`. Or, l'imagerie médicale est hétérogène (champs de vue et résolutions variables). 
+
+Ce script a pour rôle de transformer les images du format nnU-Net en **tenseurs stricts et uniformes**, centrés sur la maladie, prêts à être ingérés par les dataloaders PyTorch.
+
+* **Fonctionnalités clés :**
+  * **Cropping Centré sur la Maladie :** Calcule le centre de masse global de la charge tumorale (en englobant tous les foyers potentiels d'une même patiente) et extrait un cube strict (ex: 96x96x96 voxels) autour de ce point.
+  * **Isotropisation Dynamique :** * Pour l'IRM (DCE) : Force un espacement fin de `1.0 x 1.0 x 1.0 mm`.
+    * Pour le TEP/TDM : Force un espacement de `2.0 x 2.0 x 2.0 mm` (pour capturer un large champ de vue sans interpoler excessivement le signal métabolique PET).
+  * **Padding Intelligent (Pare-chocs) :** Si la tumeur est proche du bord du corps et que le cube de 96 voxels "dépasse" de l'image, le script remplit le vide avec des valeurs physiquement correctes (`-1000 HU` pour le scanner, `0` pour le PET/IRM).
+  * **Double Export :** Sauvegarde le résultat en `.nii.gz` (pour vérification humaine dans ITK-SNAP avec recalcul exact de l'origine spatiale) ET en `.npy` (pour une lecture ultra-rapide en RAM lors de l'entraînement PyTorch).
+
+**📥 Entrées attendues**
+* Les dossiers `imagesTr` et `labelsTr` issus de la mise en structure nnU-Net (Phase 1).
+
+**📤 Sorties générées**
+* Un dossier organisé par patient contenant les tenseurs Numpy (`.npy`) et NIfTI de taille fixe (ex: `96x96x96`).
+
+**▶️ Exécution :**
+
+Pour générer les tenseurs de la branche IRM :
+```bash
+python src_DL-DL-pCR/Fully_Neuronal_Way_Pre-works/images_pre-processor.py \
+    --src ./nnunet_data/nnUNet_raw/Dataset001_DCE \
+    --out ./Tensors_Ready/MRI \
+    --modality MRI
+```
+
+Pour générer les tenseurs de la branche TEP/TDM :
+
+```bash
+python src_DL-DL-pCR/Fully_Neuronal_Way_Pre-works/images_pre-processor.py \
+    --src ./nnunet_data/nnUNet_raw/Dataset002_BreastPETCT \
+    --out ./Tensors_Ready/PETCT \
+    --modality PETCT
+```
