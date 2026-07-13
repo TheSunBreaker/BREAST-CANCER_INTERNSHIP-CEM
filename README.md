@@ -206,4 +206,76 @@ Il assure également l'association parfaite entre les masques de segmentation (d
 ```bash
 python src_DL-ML-pCR/pre_works/DICOM_ingester_but_even_meaner.py
 ```
+### 3. Niveau 2 : Extraction et Fusion Intelligente des Masques (`dcm_masks_master.py`)
 
+Les annotations radiologiques (**DICOM SEG** ou **RTSTRUCT**) peuvent être complexes : multi-classes, doublons, chevauchements ou lésions multiples. Ce script (V5) est un moteur d'analyse qui convertit ces contours vectoriels ou segmentés en grilles **NIfTI** parfaitement recalées sur les images de référence.
+
+#### Fonctionnalités clés
+
+* **Support Multi-Formats :**
+
+  * Convertit les `SEG` (via `pydicom-seg`) et rastérise les `RTSTRUCT` en 3D (via l'appel externe à `Plastimatch`).
+
+* **Analyse Sémantique Multi-classes :**
+
+  * Différencie automatiquement la tumeur primaire (Classe 1) des ganglions lymphatiques/nodules (Classe 2) via l'analyse sémantique des métadonnées (recherche de mots-clés comme "GANGLION", "NODE", etc.).
+
+* **Résolution des Conflits (Dice Score) :**
+
+  * **Doublons (Dice ≥ 0.95)** : Conserve automatiquement le masque le plus récent ou le plus restrictif.
+  * **Lésions distinctes (Dice < 0.20)** : Les fusionne sémantiquement dans un seul fichier multi-classes (`_FUSED.nii.gz`).
+  * **Chevauchements ambigus** : Isole automatiquement les masques dans un dossier `a_verifier/` pour inspection manuelle par un radiologue.
+
+#### Entrées attendues
+
+* Les répertoires `Base_IRM/` et `Base_PETCT/` contenant les dossiers `dicom_mask_*` et les images de référence.
+
+#### Sorties générées
+
+* Dossiers `mask/` (Tumeurs) et `nodule/` (Ganglions) contenant les NIfTI prêts pour le Deep Learning.
+* Fichier de suivi global `rapport_analyse_masques_v5.txt`.
+
+#### Exécution
+
+```bash
+python src_DL-ML-pCR/pre_works/dcm_masks_master.py --mri_root ./Base_IRM --petct_root ./Base_PETCT
+```
+
+---
+
+### 4. Niveau 3 : Normalisation Physique SUVbw pour la TEP (`suv_converter_nii_maker.py`)
+
+Pour que les réseaux de neurones (et les extracteurs radiomiques) puissent analyser quantitativement l'imagerie TEP, les valeurs de pixels brutes (Coups ou Becquerels) doivent être impérativement converties en **SUVbw** (*Standardized Uptake Value based on body weight*).
+
+#### Fonctionnalités clés
+
+* **Extraction DICOM :**
+
+  * Va fouiller dans les en-têtes DICOM bruts de la visite correspondante pour retrouver la dose injectée, le poids du patient, le temps de demi-vie du radiotraceur (ex: FDG) et les heures exactes d'injection et d'acquisition.
+
+* **Fallback CSV :**
+
+  * Permet d'utiliser un fichier clinique de secours si les systèmes PACS de l'hôpital ont effacé le poids du patient des métadonnées.
+
+* **Suivi Longitudinal :**
+
+  * Applique le bon facteur SUV à la Baseline et calcule indépendamment le facteur pour les suivis (Follow-ups).
+
+* **Sécurité Anti-Double Conversion :**
+
+  * Détecte si l'image NIfTI brute est déjà encodée en unité SUV par le constructeur et la copie sans l'altérer.
+
+#### Entrée attendue
+
+* Le dossier `Base_PETCT/` généré aux étapes précédentes, contenant les fichiers `_RAW.nii.gz`.
+
+#### Sorties générées
+
+* Nouveaux fichiers `_SUV.nii.gz` avec les valeurs d'intensité physiquement normalisées.
+* Journal de conversion `suv_conversion_log.txt`.
+
+#### Exécution
+
+```bash
+python src_DL-ML-pCR/pre_works/suv_converter_nii_maker.py ./Base_PETCT
+```
