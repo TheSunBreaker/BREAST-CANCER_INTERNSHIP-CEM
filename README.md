@@ -96,3 +96,20 @@ export PATH=$HOME/.local/bin:$PATH
 ```
 
 > **Remarque :** Pour rendre cette modification permanente, ajoutez cette ligne à la fin de votre fichier `~/.bashrc` ou `~/.zshrc`.
+
+## 🗄️ Jeux de données (Datasets) et Acquisition
+
+*Note : Les données cliniques et d'imagerie privées du Centre Eugène Marquis (CEM) ne sont pas hébergées sur ce dépôt pour des raisons strictes de confidentialité et d'éthique. Cette section détaille la procédure d'acquisition des jeux de données publics utilisés pour l'entraînement et le pré-entraînement des modèles Deep Learning.*
+
+### 1. Dataset QIN-Breast
+Ce jeu de données public d'imagerie mammaire est utilisé pour consolider la phase d'entraînement.
+* **Accès aux données :** [Collection QIN-Breast sur The Cancer Imaging Archive (TCIA)](https://www.cancerimagingarchive.net/collection/qin-breast/)
+
+### 2. Dataset MAMA-MIA Challenge
+Ces données sont issues du challenge MAMA-MIA. Le téléchargement automatisé de ces cohortes nécessite une authentification préalable.
+* **Dépôt officiel du challenge :** [GitHub LidiaGarrucho/MAMA-MIA](https://github.com/LidiaGarrucho/MAMA-MIA)
+
+**Procédure d'acquisition automatisée :**
+1. **Création de compte :** Inscrivez-vous sur la plateforme [Synapse](https://www.synapse.org/).
+2. **Authentification :** Générez un *Personal Access Token* (Token d'accès) depuis les paramètres de votre compte Synapse.
+3. **Exécution du script :** Rendez-vous dans le répertoire [`src_DL-ML-pCR/dataBringer/`](./src_DL-ML-pCR/dataBringer). Ce dossier contient les scripts (utilisant la librairie `synapseclient`) conçus pour se connecter via votre Token et télécharger automatiquement l'ensemble des données du challenge vers votre espace de travail.
