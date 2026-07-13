@@ -279,3 +279,101 @@ Pour que les réseaux de neurones (et les extracteurs radiomiques) puissent anal
 ```bash
 python src_DL-ML-pCR/pre_works/suv_converter_nii_maker.py ./Base_PETCT
 ```
+## 🧠 Formatage pour nnU-Net (Deep Learning)
+
+Une fois les données nettoyées, converties en NIfTI et normalisées physiquement, elles doivent être restructurées selon les spécifications strictes du framework **nnU-Net v2** :
+
+* Renommage des canaux en `_0000`.
+* Séparation en `imagesTr` pour l'entraînement et `labelsTr` pour les masques.
+* Génération du `dataset.json`.
+
+Les scripts d'orchestration de cette étape se trouvent dans le répertoire [`src_DL-ML-pCR/to_nnUnet_structure/`](./src_DL-ML-pCR/to_nnUnet_structure).
+
+---
+
+## 1. Orchestrateur IRM DCE (`irm2nnunet_v2_PA.py`)
+
+Ce script gère la complexité de l'imagerie dynamique (**4D**). Il ne se contente pas de copier des fichiers : il analyse la cinétique du produit de contraste pour extraire les phases physiologiques pertinentes, quelle que soit la machine ou le protocole d'acquisition.
+
+### Fonctionnalités clés
+
+* **Jump-Anchored Time-Matching :**
+
+  * Détecte automatiquement le moment de l'injection (le "saut" de contraste) et ancre les phases temporelles sur cet événement.
+  * Il extrait typiquement :
+
+    * *Baseline* (T0)
+    * *Wash-in* immédiat
+    * *Plateau* (+90s)
+    * *Wash-out* (+180s)
+
+* **Alignement & Normalisation :**
+
+  * Réaligne strictement toutes les phases temporelles sur la grille spatiale de la Baseline.
+  * Applique une normalisation Z-score globale par patient.
+
+* **Filtre Oncologique (TNBC) :**
+
+  * Via le flag `--triple_neg_only`, le script peut croiser les données avec un registre clinique (Excel/CSV) pour n'exporter que les patientes atteintes de cancer du sein Triple Négatif (ER=0, PR=0, HER2=0).
+
+* **Modes de tracking :**
+
+  * Compatible avec les données internes (mode `INGESTEUR`) et les bases publiques comme MAMA-MIA (mode `MAMAMIA`).
+
+### Exécution (Mode Entraînement - 4 Canaux)
+
+```bash id="zj7q9b"
+python src_DL-ML-pCR/to_nnUnet_structure/irm2nnunet_v2_PA.py \
+    --src ./Base_IRM \
+    --nnunet ./nnunet_data \
+    --num_channels 4 \
+    --mode INGESTEUR
+```
+
+---
+
+## 2. Orchestrateur TEP / TDM (`pet_and_ct_2_nnunet.py`)
+
+Ce script prépare les données d'imagerie métabolique et anatomique pour un entraînement multimodal.
+
+Le principe fondamental ici est que l'image **TEP (convertie en SUV)** dicte la géométrie spatiale.
+
+### Fonctionnalités clés
+
+* **Ancrage Spatial Absolu :**
+
+  * Le volume TEP devient le canal `_0000`.
+  * Le volume TDM (CT) devient le canal `_0001`.
+  * Le CT est strictement ré-échantillonné et recalé sur la grille du TEP.
+
+* **Gestion de l'air ambiant :**
+
+  * Lors du recalage du TDM, les pixels manquants créés par la transformation spatiale sont remplis avec la valeur `-1000.0 HU` (*Unités Hounsfield*).
+  * Cette valeur correspond à l'air et permet d'éviter les artefacts aux frontières de l'image.
+
+* **Sécurité SUV :**
+
+  * Le script vérifie obligatoirement que l'image source a bien été normalisée en **SUVbw** avant de l'accepter dans le jeu d'entraînement.
+
+### Exécution (Mode Entraînement)
+
+```bash id="2tqv1a"
+python src_DL-ML-pCR/to_nnUnet_structure/pet_and_ct_2_nnunet.py \
+    --src ./Base_PETCT \
+    --nnunet ./nnunet_data
+```
+
+---
+
+## 💡 Mode Inférence (Test)
+
+Pour tous les orchestrateurs ci-dessus, l'ajout du flag `--inference` modifie le comportement du script :
+
+* Il ne cherche pas de masques de vérité terrain (*labels*).
+* Il n'écrase pas le fichier `dataset.json` de configuration d'entraînement.
+* Il exporte les images directement dans le dossier `imagesTs` (*Test Set*).
+* Les données sont prêtes à être ingérées par la commande :
+
+```bash
+nnUNetv2_predict
+```
