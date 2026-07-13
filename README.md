@@ -558,3 +558,120 @@ python src_DL-ML-pCR/nnUNET/nnUNET_v2_swiss_knife.py export \
     -d 001 \
     --zip mon_modele_dce.zip
 ```
+---
+
+## 🎭 Segmentation ROI seins, et Raffinement du ROI
+
+Du côté TEP-TDM, une segmentation précise des seins est nécessaire pour isoler le signal métabolique d'intérêt (extraction radiomique). 
+
+Ce pipeline en deux étapes automatise la génération de masques robustes, capables d'exclure les structures anatomiques parasites (**cœur, sternum, côtes, poumons**) qui pourraient fausser l'analyse radiomique ou métabolique.
+
+---
+
+# 1. Segmentation Initiale et Extraction des "Boucliers" (`mrTotalSegmentator.py`)
+
+Ce script utilise la puissance de **TotalSegmentator** pour deux objectifs :
+
+* Segmenter le volume global des seins.
+* Extraire les organes "boucliers" (structures à exclure de la ROI finale).
+
+## Fonctionnalités clés
+
+* **Segmentation Mammaire :**
+
+  * Utilise le modèle spécifique `breasts` pour isoler le tissu mammaire.
+
+* **Extraction Anatomique :**
+
+  * Génère un masque pour :
+
+    * le cœur,
+    * le sternum,
+    * les côtes,
+    * les cartilages intercostaux,
+    * les poumons,
+    * les vertèbres,
+    * les clavicules,
+    * les pectoraux.
+
+* **Mode Hybride :**
+
+  * Supporte l'exécution via API Python (pour intégration) ou CLI (pour serveurs distants).
+
+## Entrées attendues
+
+* `Base_PETCT/`
+  Dossier contenant les images CT de baseline.
+
+## Sorties générées
+
+* `Base_PETCT_BreastMasks/`
+
+  * Masques mammaires bruts.
+
+* `Base_PETCT_Organs/`
+
+  * Dossier contenant les masques d'organes anatomiques.
+
+## Exécution
+
+```bash id="4p4j8m"
+python src_DL-ML-pCR/auto_segmentation_arsenal/mrTotalSegmentator.py \
+    --input_root ./Base_PETCT \
+    --output_root ./Base_PETCT_BreastMasks \
+    --output_organs_root ./Base_PETCT_Organs \
+    --muscles_seg
+```
+
+---
+
+# 2. Sculpture et Raffinement des ROI (`mrSegmentationGrower.py`)
+
+Le masque généré par **TotalSegmentator** est un point de départ.
+
+Ce script transforme ce masque brut en une ROI mammaire physiquement cohérente par une approche de **soustraction géométrique déterministe**, supprimant l'instabilité des anciennes méthodes de *Region Growing*.
+
+## Fonctionnalités clés
+
+* **Expansion Frontale Asymétrique :**
+
+  * Dilate le masque vers la peau tout en respectant la limite de l'air ambiant.
+
+* **Soustraction du Super-Bouclier :**
+
+  * Fusionne les organes extraits précédemment (cœur, côtes, pectoraux, etc.) en un bloc massif et impénétrable.
+  * Soustrait ensuite ce bloc géométriquement du masque mammaire afin de garantir l'exclusion totale du thorax.
+
+* **Nettoyage Morphologique :**
+
+  * Utilise des opérations d'ouverture et de filtrage par composantes connexes pour éliminer les îlots parasites et les artefacts de connexion entre les seins.
+
+## Entrées attendues
+
+* `Base_PETCT/`
+
+  * Images CT.
+
+* `Base_PETCT_BreastMasks/`
+
+  * Masques mammaires bruts.
+
+* `Base_PETCT_Organs/`
+
+  * Boucliers anatomiques.
+
+## Sortie générée
+
+* `Base_PETCT_BreastMasks_Expanded/`
+
+  * ROI finales, prêtes pour l'extraction de features ou l'entraînement.
+
+## Exécution
+
+```bash id="s7e8yx"
+python src_DL-ML-pCR/auto_segmentation_arsenal/mrSegmentationGrower.py \
+    --ct_dir ./Base_PETCT \
+    --mask_dir ./Base_PETCT_BreastMasks \
+    --organs_dir ./Base_PETCT_Organs \
+    --output_dir ./Base_PETCT_BreastMasks_Expanded
+```
