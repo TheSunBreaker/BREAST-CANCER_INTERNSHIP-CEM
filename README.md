@@ -154,12 +154,12 @@ Ce script (version **V6**) parcourt la *Safe Zone*, regroupe les séries par exa
 
 Il assure également l'association parfaite entre les masques de segmentation (dessinés par les radiologues) et leurs images sources.
 
-### ⚠️ Dépendances externes critiques
+⚠️ **Dépendances externes critiques :** 
+> Ce script fait appel à deux outils incontournables qu'il faut télécharger et extraire sur votre machine (les chemins vers les exécutables doivent être mis à jour dans l'en-tête du script Python) :
 
-> Ce script s'appuie sur deux outils externes qui doivent être téléchargés puis installés localement. Les chemins vers leurs exécutables doivent être renseignés dans l'en-tête du script Python.
-
-* **Plastimatch** *(conversion robuste des examens PET/CT)*.
-* **dcm2niix** *(conversion des IRM, gestion des séries 4D et export NIfTI)*.
+-   **Plastimatch** (pour la conversion rigoureuse des TEP/TDM) : [Télécharger Plastimatch](https://sourceforge.net/projects/plastimatch/postdownload)
+    
+-   **dcm2niix** (pour la gestion experte des IRM et du 4D) : [Télécharger dcm2niix](https://github.com/rordenlab/dcm2niix/releases)
 
 ### Fonctionnalités principales
 
