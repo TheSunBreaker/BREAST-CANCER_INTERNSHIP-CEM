@@ -1455,11 +1455,7 @@ Bien que robuste, cette méthode comporte des limites.
 
 C'est tout l'enjeu de la **Phase 2**, actuellement en cours d'élaboration.
 
-Située dans le répertoire :
-
-```text
-src_DL-DL-pCR/
-```
+Située dans le répertoire : [`src_DL-DL-pCR/`](./src_DL-DL-pCR/).
 
 cette seconde approche s'affranchit du pipeline d'extraction radiomique pour proposer une architecture **Deep Learning multimodale de bout en bout (End-to-End)** :
 
