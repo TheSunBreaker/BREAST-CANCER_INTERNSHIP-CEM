@@ -17,7 +17,7 @@ ID_DOSSIER_IMAGES = "syn64871114"
 ID_DOSSIER_MASQUES = "syn64871175" 
 
 # Destination finale des données formatées
-DOSSIER_SORTIE = "./mes_dossiers_nnunet"
+DOSSIER_SORTIE = "./MAMAMIA_Dataset"
 
 # Désactivation SSL pour éviter les erreurs de certificats sur certains réseaux
 DESACTIVER_VERIFICATION_SSL = True
