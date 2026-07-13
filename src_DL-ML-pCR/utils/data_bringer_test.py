@@ -1,0 +1,15 @@
+import synapseclient
+import urllib3
+
+# 1. On masque les avertissements rouges dans la console liés au contournement SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# 2. On initialise Synapse en lui disant de NE PAS tester la connexion tout de suite
+syn = synapseclient.Synapse(skip_checks=True)
+
+# 3. On ordonne à la session interne de ne plus vérifier les certificats SSL
+syn._requests_session.verify = False
+
+# 4. Suite de ton code : connexion et requêtes
+syn.login(authToken="eyJ0eXAiOiJKV1QiLCJraWQiOiJXN05OOldMSlQ6SjVSSzpMN1RMOlQ3TDc6M1ZYNjpKRU9VOjY0NFI6VTNJWDo1S1oyOjdaQ0s6RlBUSCIsImFsZyI6IlJTMjU2In0.eyJhY2Nlc3MiOnsic2NvcGUiOlsidmlldyIsImRvd25sb2FkIiwibW9kaWZ5Il0sIm9pZGNfY2xhaW1zIjp7fX0sInRva2VuX3R5cGUiOiJQRVJTT05BTF9BQ0NFU1NfVE9LRU4iLCJpc3MiOiJodHRwczovL3JlcG8tcHJvZC5wcm9kLnNhZ2ViYXNlLm9yZy9hdXRoL3YxIiwiYXVkIjoiMCIsIm5iZiI6MTc3NjE1NzYxNSwiaWF0IjoxNzc2MTU3NjE1LCJqdGkiOiIzNTU2MSIsInN1YiI6IjM1ODQyODQifQ.Ki62gZeEVvsTzIIxJZMk3m3qHROj-Vzc6hdAso-z6SHRfqx4pIEuiMxHQxZdV3twTRAuhi9A5gPjhuAnxn2P_lrONCoBL5ADYN5RMCvgaa9TSLts9d6WdWL2qKr1lE5LVCPPxLhd_I9xX8Ag8LQgil03nRjxCknivsoSRfcSin-Ep9u_ExTvK4R2G7oX7Bb1xb820wFxWjC5dkQr_dfgmavieDm1-a5Yqfgh9yEqs8f4oeX6HTUd6B6363TyoHa81zwtUNeHxV1EaluprkcyApfRSp7c_qZK_cfb8EozunDMY6flrMaIkwOPiQY0dVUBlA7MPopZ0ctnBXn5CJMMww")
+print(syn.get("syn60868042"))
